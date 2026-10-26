@@ -1,0 +1,6 @@
+{
+    "java.compile.nullAnalysis.mode": "automatic",
+    "editor.rulers": [110],
+    "workbench.tree.indent": 14,
+    "java.configuration.updateBuildConfiguration": "interactive"
+}

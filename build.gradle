@@ -1,0 +1,86 @@
+plugins {
+	id 'java-library'
+	id 'eclipse'
+}
+
+group = 'etri'
+version = '0.1.0'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+tasks.withType(JavaCompile) {
+	options.encoding = 'UTF-8'
+}
+
+repositories {
+	mavenCentral()
+}
+
+ext {
+	// jackson · okhttp 는 :utils 와 같은 판을 쓴다 — utils 가 둘을 implementation 으로만 가져
+	// 이 프로젝트에 전이되지 않는다.
+	jackson_version = '2.18.2'
+	okhttp_version = '4.12.0'
+	slf4j_version = '2.0.17'
+	jetbrains_version = '24.1.0'
+	findbugs_version = '3.0.2'
+	junit_jupiter_version = '5.10.2'
+}
+
+dependencies {
+	// RobotTwinOperation과 MoveLinear의 공개 실행 API가 utils.async 타입을 노출한다.
+	api project(':utils')
+
+	// 공개 API 가 JsonNode 를 주고받는다.
+	api "com.fasterxml.jackson.core:jackson-databind:${jackson_version}"
+	// utils.rpc.restful 이 OkHttpClient 를 받는다.
+	implementation "com.squareup.okhttp3:okhttp:${okhttp_version}"
+	implementation "org.slf4j:slf4j-api:${slf4j_version}"
+
+	compileOnly "org.jetbrains:annotations:${jetbrains_version}"		// @Nullable
+	compileOnly "com.google.code.findbugs:jsr305:${findbugs_version}"	// @GuardedBy
+
+	testImplementation "org.junit.jupiter:junit-jupiter:${junit_jupiter_version}"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+	testImplementation "com.squareup.okhttp3:mockwebserver:${okhttp_version}"
+	testCompileOnly "org.jetbrains:annotations:${jetbrains_version}"
+}
+
+// 사용 예제 — 라이브러리 jar 에 넣지 않는다. 실행:
+//   gradle runExample -Pexample=MoveLinearExample [--args='--url http://10.0.0.5:8801']
+sourceSets {
+	examples {
+		compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+		runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+	}
+}
+
+tasks.register('runExample', JavaExec) {
+	group = 'application'
+	description = 'Runs an example in mdt.robot.client.examples (-Pexample=<class name>)'
+	classpath = sourceSets.examples.runtimeClasspath
+	mainClass = providers.gradleProperty('example').map { "mdt.robot.client.examples.${it}" }
+	standardInput = System.in
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}
+
+eclipse {
+	classpath {
+		file {
+			whenMerged { cp ->
+				// :utils 를 Eclipse 프로젝트로 연결하므로 그 빌드 산출 jar 는 classpath 에서 뺀다.
+				def utilsLibDir = project(':utils').projectDir.toPath().resolve('build/libs')
+											.toUri().getPath().replaceAll('/+$', '')
+				cp.entries.removeAll { entry ->
+					entry.kind == 'lib' && entry.path != null && entry.path.startsWith(utilsLibDir + '/')
+				}
+			}
+		}
+	}
+}

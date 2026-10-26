@@ -1,0 +1,4 @@
+rootProject.name = 'mdt-robot-client'
+
+include ':utils'
+project(':utils').projectDir = file('../../common/utils')
