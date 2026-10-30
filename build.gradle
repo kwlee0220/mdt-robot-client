@@ -19,34 +19,23 @@ repositories {
 	mavenCentral()
 }
 
-ext {
-	// jackson · okhttp 는 :utils 와 같은 판을 쓴다 — utils 가 둘을 implementation 으로만 가져
-	// 이 프로젝트에 전이되지 않는다.
-	jackson_version = '2.18.2'
-	okhttp_version = '4.12.0'
-	slf4j_version = '2.0.17'
-	jetbrains_version = '24.1.0'
-	findbugs_version = '3.0.2'
-	junit_jupiter_version = '5.10.2'
-}
-
 dependencies {
 	// RobotTwinOperation과 MoveLinear의 공개 실행 API가 utils.async 타입을 노출한다.
 	api project(':utils')
 
 	// 공개 API 가 JsonNode 를 주고받는다.
-	api "com.fasterxml.jackson.core:jackson-databind:${jackson_version}"
+	api libs.jackson.databind
 	// utils.rpc.restful 이 OkHttpClient 를 받는다.
-	implementation "com.squareup.okhttp3:okhttp:${okhttp_version}"
-	implementation "org.slf4j:slf4j-api:${slf4j_version}"
+	implementation libs.okhttp
+	implementation libs.slf4j.api
 
-	compileOnly "org.jetbrains:annotations:${jetbrains_version}"		// @Nullable
-	compileOnly "com.google.code.findbugs:jsr305:${findbugs_version}"	// @GuardedBy
+	compileOnly libs.jetbrains.annotations		// @Nullable
+	compileOnly libs.findbugs.jsr305	// @GuardedBy
 
-	testImplementation "org.junit.jupiter:junit-jupiter:${junit_jupiter_version}"
-	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
-	testImplementation "com.squareup.okhttp3:mockwebserver:${okhttp_version}"
-	testCompileOnly "org.jetbrains:annotations:${jetbrains_version}"
+	testImplementation libs.junit.jupiter
+	testRuntimeOnly libs.junit.platform.launcher
+	testImplementation libs.okhttp.mockwebserver
+	testCompileOnly libs.jetbrains.annotations
 }
 
 // 사용 예제 — 라이브러리 jar 에 넣지 않는다. 실행:
