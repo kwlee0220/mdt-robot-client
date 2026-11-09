@@ -55,7 +55,7 @@ class MeasureObjectOffsetTest {
 		MeasureObjectOffset.Result result;
 		if ( async ) { operation.start(); result = operation.get(3, TimeUnit.SECONDS); }
 		else { result = operation.run(); }
-		assertTrue(result.measured());
+		assertTrue(result.goalReached());
 		assertSame(result, operation.getProgress());
 		var measurement = result.measurement().orElseThrow();
 		assertEquals(MeasureObjectOffset.TcpReference.AS_REPORTED, measurement.tcpReference());
@@ -107,7 +107,7 @@ class MeasureObjectOffsetTest {
 		server.on("GET", BATCH, req -> FakeTwinServer.json(200, response));
 		var result = operation(MeasureObjectOffset.TcpReference.AS_REPORTED,
 				new MeasureObjectOffset.Options(FAST.timeout(), bound, FAST.poll())).run();
-		assertTrue(result.measured());
+		assertTrue(result.goalReached());
 		assertEquals(bound, result.measurement().orElseThrow().timeSkew());
 	}
 
@@ -154,7 +154,7 @@ class MeasureObjectOffsetTest {
 		var result = operation.run();
 		assertTrue(operation.isCompleted());
 		assertEquals(MeasureObjectOffset.Outcome.TIMEOUT, result.outcome());
-		assertFalse(result.measured());
+		assertFalse(result.goalReached());
 		assertTrue(result.measurement().isEmpty());
 		assertEquals(reason, result.diagnostics().lastRejection());
 		assertTrue(result.diagnostics().rejectionCounts().get(reason) > 0);
@@ -172,7 +172,7 @@ class MeasureObjectOffsetTest {
 			return FakeTwinServer.json(200, response);
 		});
 		var result = operation(MeasureObjectOffset.TcpReference.AS_REPORTED, FAST).run();
-		assertTrue(result.measured());
+		assertTrue(result.goalReached());
 		assertEquals(2, result.diagnostics().reads());
 		assertEquals(1, result.diagnostics().rejectedSamples());
 		assertEquals(.12, result.measurement().orElseThrow().offset().x(), 1e-12);
@@ -182,7 +182,7 @@ class MeasureObjectOffsetTest {
 	@Test void zeroTimeoutAndLateResponseNeverProduceAMeasurement() throws Exception {
 		var zero = operation(MeasureObjectOffset.TcpReference.AS_REPORTED,
 				new MeasureObjectOffset.Options(Duration.ZERO, FAST.maxTimeSkew(), FAST.poll())).run();
-		assertFalse(zero.measured());
+		assertFalse(zero.goalReached());
 		assertTrue(server.requests.isEmpty());
 		server.on("GET", BATCH, req -> FakeTwinServer.json(200, response()).setHeadersDelay(350, TimeUnit.MILLISECONDS));
 		var result = operation(MeasureObjectOffset.TcpReference.AS_REPORTED, FAST).run();
@@ -260,11 +260,10 @@ class MeasureObjectOffsetTest {
 		var operation = operation(MeasureObjectOffset.TcpReference.AS_REPORTED,
 				new MeasureObjectOffset.Options(Duration.ZERO, Duration.ZERO, FAST.poll()));
 		operation.setExecutor(queued::add); operation.start();
-		assertFalse(operation.cancel(true));
 		assertThrows(IllegalStateException.class, operation::start);
 		assertThrows(IllegalStateException.class, operation::run);
 		queued.get(0).run();
-		assertFalse(operation.get().measured());
+		assertFalse(operation.get().goalReached());
 		assertTrue(server.requests.isEmpty());
 	}
 

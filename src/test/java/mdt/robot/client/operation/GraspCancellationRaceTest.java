@@ -134,7 +134,7 @@ class GraspCancellationRaceTest {
 			return super.isCancelled();
 		}
 		@Override protected Map<String,?> buildInputs() { return Map.of("target", "grasp"); }
-		@Override protected GripperCheck convertResult(OperationResult result) {
+		@Override protected GripperCheck judgeResult(OperationResult result) {
 			throw new AssertionError("no remote operation should complete in these tests");
 		}
 	}

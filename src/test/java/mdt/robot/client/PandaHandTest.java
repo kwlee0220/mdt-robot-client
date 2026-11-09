@@ -28,6 +28,23 @@ class PandaHandTest {
 	}
 
 	@Test
+	void armCommandFromArmPoseReproducesTheCommand() {
+		// 팔이 보고한 자세(hand)를 다시 명령하면 처음 명령(link8)이 나와야 손목이 돌지 않는다.
+		Pose tcp = new Pose(new Position(0.3, -0.2, 0.05), Geometry.downWithYaw(0.4));
+		Pose cmd = PandaHand.toArmCommand(tcp);
+		Pose reported = new Pose(cmd.position(), cmd.orientation().multiply(LINK8_TO_HAND));
+		Pose again = PandaHand.armCommandFromArmPose(reported);
+		assertEquals(cmd.position().x(), again.position().x(), EPS);
+		assertEquals(cmd.position().y(), again.position().y(), EPS);
+		assertEquals(cmd.position().z(), again.position().z(), EPS);
+		Quaternion a = again.orientation(), c = cmd.orientation();
+		assertEquals(1.0, Math.abs(a.x()*c.x() + a.y()*c.y() + a.z()*c.z() + a.w()*c.w()), 1e-9);
+		// toArmCommand(tcpFromArmPose(·))와 같다.
+		Pose composed = PandaHand.toArmCommand(PandaHand.tcpFromArmPose(reported));
+		assertEquals(composed.position().z(), again.position().z(), EPS);
+	}
+
+	@Test
 	void tcpFromArmPoseRestoresThePosition() {
 		Pose tcp = new Pose(new Position(0.3, -0.2, 0.05), Geometry.downWithYaw(0.4));
 		Pose cmd = PandaHand.toArmCommand(tcp);

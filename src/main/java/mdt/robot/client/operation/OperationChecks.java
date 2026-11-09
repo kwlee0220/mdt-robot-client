@@ -11,7 +11,6 @@ import mdt.robot.client.Ops;
 final class OperationChecks {
 	private OperationChecks() { }
 
-	record ClosedLoopCheck(boolean reached, @Nullable String why, OperationResult result) { }
 
 	static ClosedLoopCheck judgeClosedLoop(OperationResult result) {
 		if ( !result.isCompleted() ) {
@@ -33,7 +32,7 @@ final class OperationChecks {
 
 	/** 알려진 코드 안내 → 서버 메시지 → 원격 상태 순으로 실패 안내를 만든다. */
 	static String failureWhy(OperationResult result) {
-		return Ops.failureWhy(result).orElseGet(() -> result.errorMessage() != null && !result.errorMessage().isBlank()
+		return Ops.failureHint(result).orElseGet(() -> result.errorMessage() != null && !result.errorMessage().isBlank()
 				? result.errorMessage() : "원격 연산 상태: " + result.status());
 	}
 }

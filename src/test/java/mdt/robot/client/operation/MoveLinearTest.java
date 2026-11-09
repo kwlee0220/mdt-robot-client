@@ -70,7 +70,7 @@ class MoveLinearTest {
 		assertTrue(m_server.requests.isEmpty(), "construction must not perform HTTP requests");
 
 		MoveCheck actual = move.run();
-		assertEquals(finalX == 0.401, actual.reached());
+		assertEquals(finalX == 0.401, actual.goalReached());
 		assertEquals(finalX == 0.401 ? 0.001 : 0.02, actual.errorM(), 1e-9);
 		assertTrue(move.isCompleted());
 		assertEquals(actual, move.get());
@@ -92,9 +92,9 @@ class MoveLinearTest {
 				.setBody("{\"status\":\"COMPLETED\",\"outputs\":"
 						+ (explicitNull ? "{\"final_pose\":null}" : "{}") + "}"));
 		MoveCheck check = runCompletedMove(MoveLinear.Options.DEFAULT);
-		assertFalse(check.reached());
+		assertFalse(check.goalReached());
 		assertNull(check.errorM());
-		assertEquals("no final_pose in outputs", check.why());
+		assertEquals("no final_pose in outputs", check.failureReason());
 	}
 
 	@ParameterizedTest
@@ -105,11 +105,11 @@ class MoveLinearTest {
 		MoveLinear move = new MoveLinear(m_server.client(), TARGET);
 		move.run();
 		if ( status.equals("FAILED") ) {
-			assertNotNull(move.get().why());
+			assertNotNull(move.get().failureReason());
 			assertEquals("PLANNING_FAILED", move.get().result().errorCode());
 		}
-		assertFalse(move.get().reached());
-		assertEquals(status, move.get().result().status());
+		assertFalse(move.get().goalReached());
+		assertEquals(status, move.get().result().status().name());
 		assertTrue(move.isCompleted(), "remote outcome and local execution state are different");
 	}
 
@@ -121,7 +121,7 @@ class MoveLinearTest {
 		MoveCheck actual = runCompletedMove(
 				MoveLinear.Options.DEFAULT.withSettleTimeout(Duration.ofSeconds(3)));
 		assertEquals(finalPose(settledX), Pose.fromJson(actual.settledPose()));
-		assertEquals(settledX == 0.401, actual.reached());
+		assertEquals(settledX == 0.401, actual.goalReached());
 		assertEquals(settledX == 0.401 ? 0.001 : 0.02, actual.errorM(), 1e-9);
 	}
 
@@ -133,8 +133,8 @@ class MoveLinearTest {
 						Map.of("quality", "OK", "received_at", frozen, "value", Map.of("pose", TARGET))));
 		// 정숙 구간(600ms)보다 오래 기다려도 같은 수신 시각의 캐시는 정착 근거가 될 수 없다.
 		MoveCheck check = runCompletedMove(MoveLinear.Options.DEFAULT.withSettleTimeout(Duration.ofMillis(900)));
-		assertFalse(check.reached());
-		assertEquals(MoveCheck.SETTLE_TIMEOUT, check.reason());
+		assertFalse(check.goalReached());
+		assertEquals(MoveCheck.SETTLE_TIMEOUT, check.failureCode());
 		assertNull(check.errorM());
 		assertNull(check.settledPose());
 	}
@@ -145,12 +145,12 @@ class MoveLinearTest {
 				.on("GET", "/variables/ee_pose", req -> observation(0.4, "STALE"));
 		MoveCheck actual = runCompletedMove(
 				MoveLinear.Options.DEFAULT.withSettleTimeout(Duration.ofMillis(100)));
-		assertFalse(actual.reached());
-		assertEquals(MoveCheck.SETTLE_TIMEOUT, actual.reason());
+		assertFalse(actual.goalReached());
+		assertEquals(MoveCheck.SETTLE_TIMEOUT, actual.failureCode());
 		assertNull(actual.settledPose());
-		assertTrue(actual.why().contains("NO_VALID_SAMPLE"));
-		assertTrue(actual.why().contains("유효 표본 0건"));
-		assertTrue(actual.why().contains("QUALITY_NOT_OK"));
+		assertTrue(actual.failureReason().contains("NO_VALID_SAMPLE"));
+		assertTrue(actual.failureReason().contains("유효 표본 0건"));
+		assertTrue(actual.failureReason().contains("QUALITY_NOT_OK"));
 	}
 
 	@Test
@@ -164,7 +164,7 @@ class MoveLinearTest {
 		TwinException cause = assertInstanceOf(TwinException.class, failure.getCause());
 		assertEquals("NOT_FOUND", cause.getCode());
 		assertTrue(move.isFailed());
-		assertEquals("COMPLETED", move.getRemoteResult().orElseThrow().status());
+		assertEquals("COMPLETED", move.getRemoteResult().orElseThrow().status().name());
 		assertSame(cause, assertThrows(ExecutionException.class, move::get).getCause());
 	}
 
@@ -176,8 +176,8 @@ class MoveLinearTest {
 		AbstractRobotTwinOperation<Void> operation = new AbstractRobotTwinOperation<>(
 				m_server.client(), "move_linear", Duration.ofSeconds(2)) {
 			@Override protected Map<String,?> buildInputs() { return Map.of(); }
-			@Override protected boolean requiresObservation(OperationResult result) { return true; }
-			@Override protected Void convertResult(OperationResult result) throws ExecutionException {
+			@Override protected boolean observesAfterRemote(OperationResult result) { return true; }
+			@Override protected Void judgeResult(OperationResult result) throws ExecutionException {
 				observing.countDown();
 				// Model a nested observation that reports a failure after cancellation was accepted.
 				boolean interrupted = false;
@@ -201,7 +201,7 @@ class MoveLinearTest {
 			release.countDown();
 			assertThrows(CancellationException.class, () -> operation.get(3, TimeUnit.SECONDS));
 			assertTrue(operation.isCancelled());
-			assertEquals("COMPLETED", operation.getRemoteResult().orElseThrow().status());
+			assertEquals("COMPLETED", operation.getRemoteResult().orElseThrow().status().name());
 		}
 		finally { release.countDown(); }
 	}
@@ -237,7 +237,7 @@ class MoveLinearTest {
 					FakeTwinServer.BASE + "/operations/sessions/s1"));
 		}).on("GET", "/operations/sessions/s1", req -> polls.incrementAndGet() < 2
 				? FakeTwinServer.json(200, Map.of("status", "RUNNING")) : completed(0.401));
-		assertTrue(runCompletedMove(MoveLinear.Options.DEFAULT).reached());
+		assertTrue(runCompletedMove(MoveLinear.Options.DEFAULT).goalReached());
 		assertEquals(2, m_server.requests("GET /operations/sessions/s1").size());
 	}
 
@@ -272,7 +272,7 @@ class MoveLinearTest {
 		finally {
 			release.countDown();
 		}
-		assertTrue(operation.get(3, TimeUnit.SECONDS).reached());
+		assertTrue(operation.get(3, TimeUnit.SECONDS).goalReached());
 		assertTrue(operation.isCompleted());
 		assertTrue(m_server.requests("DELETE").isEmpty());
 		assertThrows(IllegalStateException.class, operation::start);
@@ -289,11 +289,10 @@ class MoveLinearTest {
 		move.start();
 		assertThrows(IllegalStateException.class, move::start);
 		assertThrows(IllegalStateException.class, move::run);
-		assertFalse(move.cancel(true));
 		assertEquals(1, queued.size());
 		assertTrue(m_server.requests.isEmpty());
 		queued.get(0).run();
-		assertTrue(move.get().reached());
+		assertTrue(move.get().goalReached());
 		assertEquals(1, m_server.requests("POST " + MOVE).size());
 	}
 
@@ -360,7 +359,7 @@ class MoveLinearTest {
 		worker.start();
 		try {
 			// HTTP I/O를 마치고 대상 sleep/get 대기에 들어간 뒤 인터럽트한다.
-			awaitWaitingIn(worker, settling ? WaitUntilStill.class : RobotTwinClient.class,
+			awaitWaitingIn(worker, settling ? WaitUntilArmStill.class : RobotTwinClient.class,
 					settling ? "sleepNanos" : "runAsync");
 			worker.interrupt();
 			worker.join(3000);
@@ -437,7 +436,7 @@ class MoveLinearTest {
 			status.set("COMPLETED");
 			worker.join(3000);
 		}
-		assertTrue(move.get(3, TimeUnit.SECONDS).reached());
+		assertTrue(move.get(3, TimeUnit.SECONDS).goalReached());
 	}
 
 	@Test
@@ -448,7 +447,7 @@ class MoveLinearTest {
 				MoveLinear.Options.DEFAULT.withSettleTimeout(Duration.ofSeconds(5)));
 		Thread worker = startOnWorker(move);
 		try {
-			awaitWaitingIn(worker, WaitUntilStill.class, "sleepNanos");
+			awaitWaitingIn(worker, WaitUntilArmStill.class, "sleepNanos");
 			OperationResult remote = move.getRemoteResult().orElseThrow();
 			assertTrue(remote.isCompleted());
 			assertFalse(move.cancel(false));
@@ -465,9 +464,31 @@ class MoveLinearTest {
 	}
 
 	@Test
-	void cancelBeforeSessionIsAvailableIsRejectedWithoutDelete() throws Exception {
+	void cancelWhileStartingIsRecordedAndSendsNothing() throws Exception {
+		// 시작 직후(STARTING)의 cancel(true)는 기록되고, 작업 스레드는 아무 요청도 보내지 않고 취소로 끝낸다.
+		m_server.on("POST", MOVE, req -> completed(0.401));
+		List<Runnable> queued = new ArrayList<>();
+		MoveLinear move = new MoveLinear(m_server.client(), TARGET);
+		move.setExecutor(queued::add);
+		move.start();
+		assertTrue(move.cancel(true));
+		assertTrue(move.cancel(true));
+		queued.get(0).run();
+		assertTrue(move.isCancelled());
+		assertThrows(CancellationException.class, move::get);
+		assertTrue(m_server.requests.isEmpty(), "no catalog read, no POST");
+		assertTrue(move.getRemoteResult().isEmpty());
+	}
+
+	@Test
+	void cancelBeforeSessionIsDeliveredOnceTheSessionExists() throws Exception {
+		// 시작 POST의 응답을 기다리는 동안의 취소는 접수되고, 세션을 받는 즉시 DELETE가 나간다.
 		AtomicReference<String> status = new AtomicReference<>("RUNNING");
 		configureRemote(status);
+		m_server.on("DELETE", "/operations/sessions/s1", req -> {
+			status.set("CANCELLED");
+			return FakeTwinServer.json(200, Map.of("status", "CANCELLED"));
+		});
 		CountDownLatch entered = new CountDownLatch(1);
 		CountDownLatch release = new CountDownLatch(1);
 		m_server.on("POST", MOVE, req -> {
@@ -486,15 +507,15 @@ class MoveLinearTest {
 		Thread worker = startOnWorker(move);
 		try {
 			assertTrue(entered.await(2, TimeUnit.SECONDS));
-			assertFalse(move.cancel(true));
-			assertTrue(m_server.requests("DELETE").isEmpty());
+			assertTrue(move.cancel(true));
+			assertTrue(m_server.requests("DELETE").isEmpty(), "no session yet");
 		}
 		finally {
-			status.set("COMPLETED");
 			release.countDown();
 			worker.join(3000);
 		}
-		assertTrue(move.get(3, TimeUnit.SECONDS).reached());
+		assertThrows(CancellationException.class, () -> move.get(3, TimeUnit.SECONDS));
+		assertEquals(1, m_server.requests("DELETE").size());
 	}
 
 	@Test
@@ -513,12 +534,81 @@ class MoveLinearTest {
 			assertEquals(timeout, cause.getTimeout());
 			assertTrue(move.isFailed());
 			assertTrue(m_server.requests("DELETE").isEmpty());
-			cause.cancel();
+			assertTrue(cause.getSessionUrl().endsWith("/operations/sessions/s1"), cause.getSessionUrl());
+			assertTrue(cause.cancel());
 			assertEquals(1, m_server.requests("DELETE").size());
 		}
 		finally {
 			status.set("CANCELLED");
 		}
+	}
+
+	@Test
+	void waitTimeoutAfterAcceptedCancelIsCancellationNotFailure() throws Exception {
+		// 취소가 접수된 뒤 팔 감속이 길어 대기 시간을 넘겨도 FAILED가 아니라 CANCELLED다.
+		AtomicReference<String> status = new AtomicReference<>("RUNNING");
+		configureRemote(status);
+		m_server.on("DELETE", "/operations/sessions/s1",
+				req -> FakeTwinServer.json(202, Map.of("status", "RUNNING", "phase", "CANCELING")));
+		MoveLinear move = new MoveLinear(m_server.client(), TARGET, MoveLinear.Options.DEFAULT, Duration.ofMillis(400));
+		move.start();
+		awaitPoll();
+		assertTrue(move.cancel(true));
+		assertThrows(CancellationException.class, () -> move.get(3, TimeUnit.SECONDS));
+		assertTrue(move.isCancelled());
+		assertFalse(move.isFailed());
+		status.set("CANCELLED");
+	}
+
+	@Test
+	void slowDeleteDoesNotBlockRemoteResultQueries() throws Exception {
+		// DELETE는 잠금 밖에서 보낸다. 응답을 기다리는 동안 다른 스레드의 조회가 막히지 않는다.
+		AtomicReference<String> status = new AtomicReference<>("RUNNING");
+		configureRemote(status);
+		CountDownLatch deleting = new CountDownLatch(1), release = new CountDownLatch(1);
+		m_server.on("DELETE", "/operations/sessions/s1", req -> {
+			deleting.countDown();
+			try { release.await(3, TimeUnit.SECONDS); }
+			catch ( InterruptedException e ) { Thread.currentThread().interrupt(); }
+			status.set("CANCELLED");
+			return FakeTwinServer.json(200, Map.of("status", "CANCELLED"));
+		});
+		MoveLinear move = new MoveLinear(m_server.client(), TARGET);
+		move.start();
+		awaitPoll();
+		Thread canceller = new Thread(() -> move.cancel(true));
+		canceller.start();
+		try {
+			assertTrue(deleting.await(2, TimeUnit.SECONDS));
+			assertTimeoutPreemptively(Duration.ofMillis(500), move::getRemoteResult);
+		}
+		finally {
+			release.countDown();
+			canceller.join(3000);
+		}
+		assertThrows(CancellationException.class, () -> move.get(3, TimeUnit.SECONDS));
+	}
+
+	@Test
+	void maxDurationExtendsTheDefaultWaitLikeOtherMotions() {
+		// 대기 상한을 주지 않고 maxDuration만 주면 max(클라이언트 기본값, maxDuration + 30초)다.
+		RobotTwinClient twin = m_server.client();		// 기본 대기 120초
+		assertEquals(Duration.ofSeconds(120), new MoveLinear(twin, TARGET).getRemoteTimeout());
+		assertEquals(Duration.ofSeconds(120),
+				MoveLinear.builder(twin, TARGET).maxDuration(Duration.ofSeconds(60)).build().getRemoteTimeout());
+		assertEquals(Duration.ofSeconds(230),
+				MoveLinear.builder(twin, TARGET).maxDuration(Duration.ofSeconds(200)).build().getRemoteTimeout());
+		assertEquals(Duration.ofSeconds(10), MoveLinear.builder(twin, TARGET).maxDuration(Duration.ofSeconds(200))
+				.timeout(Duration.ofSeconds(10)).build().getRemoteTimeout());
+	}
+
+	@Test
+	void directConstructionValidatesThePose() {
+		// Pick 등과 같은 검사를 MoveLinear를 직접 만들 때도 한다.
+		Pose nan = new Pose(new Position(Double.NaN, 0, 0.3), TARGET.orientation());
+		assertThrows(IllegalArgumentException.class, () -> new MoveLinear(m_server.client(), nan));
+		assertThrows(IllegalArgumentException.class, () -> MoveLinear.builder(m_server.client(), nan));
+		assertTrue(m_server.requests.isEmpty());
 	}
 
 	@Test
@@ -553,7 +643,7 @@ class MoveLinearTest {
 		try {
 			awaitPoll();
 			assertTrue(remote.cancel());
-			assertEquals("CANCELLED", remote.await(Duration.ofSeconds(2)).status());
+			assertEquals("CANCELLED", remote.await(Duration.ofSeconds(2)).status().name());
 		}
 		finally {
 			status.set("CANCELLED");

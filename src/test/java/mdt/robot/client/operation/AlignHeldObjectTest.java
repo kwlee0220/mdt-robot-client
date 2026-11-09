@@ -7,7 +7,10 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -81,10 +84,10 @@ class AlignHeldObjectTest {
 	@Test void convergesWhenErrorFallsBelowAcceptRadius() throws Exception {
 		drifts(0, 0.0003, 0.00045);
 		AlignHeldObject.Check check = align(0.0002).run();
-		assertTrue(check.aligned());
+		assertTrue(check.goalReached());
 		assertEquals(AlignHeldObject.StopReason.ALIGNED, check.stopReason());
 		assertErrors(check, 0.0003, 0.00015);
-		assertNull(check.why());
+		assertNull(check.failureReason());
 		assertEquals(List.of(AlignHeldObject.Stage.SETTLE, AlignHeldObject.Stage.MEASURE, AlignHeldObject.Stage.CORRECT,
 							AlignHeldObject.Stage.VERIFY, AlignHeldObject.Stage.MEASURE, AlignHeldObject.Stage.CORRECT,
 							AlignHeldObject.Stage.VERIFY), stages(check));
@@ -105,7 +108,7 @@ class AlignHeldObjectTest {
 	@Test void firstPassMayAlreadyAlign() throws Exception {
 		drifts(0, 0.0001);
 		AlignHeldObject.Check check = align(0.0002).run();
-		assertTrue(check.aligned());
+		assertTrue(check.goalReached());
 		assertEquals(1, check.passes());
 		assertEquals(4, check.steps().size());
 	}
@@ -113,17 +116,17 @@ class AlignHeldObjectTest {
 	@Test void stopsWhenErrorDoesNotShrink() throws Exception {
 		drifts(0, 0.0003, 0.0006);
 		AlignHeldObject.Check check = align(0.0002).run();
-		assertFalse(check.aligned());
+		assertFalse(check.goalReached());
 		assertEquals(AlignHeldObject.StopReason.NOT_IMPROVING, check.stopReason());
 		assertErrors(check, 0.0003, 0.0003);
-		assertTrue(check.why().startsWith("오차가 더 줄지 않는다"), check.why());
+		assertTrue(check.failureReason().startsWith("오차가 더 줄지 않는다"), check.failureReason());
 		assertNull(check.failedStage());
 	}
 
 	@Test void stopsAfterMaxPasses() throws Exception {
 		drifts(0, 0.0008, 0.0012, 0.0014, 0.00145);
 		AlignHeldObject.Check check = align(0.00015).run();
-		assertFalse(check.aligned());
+		assertFalse(check.goalReached());
 		assertEquals(AlignHeldObject.StopReason.MAX_PASSES, check.stopReason());
 		assertErrors(check, 0.0008, 0.0004, 0.0002);
 		synchronized ( this ) { assertEquals(3, m_moves, "no fourth correction"); }
@@ -132,7 +135,7 @@ class AlignHeldObjectTest {
 	@Test void unreachedCorrectionStopsBeforeVerifying() throws Exception {
 		synchronized ( this ) { m_miss = 0.01; }	// 10 mm 빗나가면 위치 허용 5 mm를 넘는다.
 		AlignHeldObject.Check check = align(0.0002).run();
-		assertFalse(check.aligned());
+		assertFalse(check.goalReached());
 		assertEquals(AlignHeldObject.StopReason.STEP_FAILED, check.stopReason());
 		assertEquals(AlignHeldObject.Stage.CORRECT, check.failedStage());
 		assertNull(check.errorM());
@@ -147,7 +150,7 @@ class AlignHeldObjectTest {
 		AlignHeldObject.Check check = new AlignHeldObject(server.client(), "peg", ENTRY, TRAVEL_Z, ORIENTATION, 0.0002, options).run();
 		assertEquals(AlignHeldObject.StopReason.STEP_FAILED, check.stopReason());
 		assertEquals(AlignHeldObject.Stage.SETTLE, check.failedStage());
-		assertTrue(check.why().startsWith("물체 정착 확인 불가"), check.why());
+		assertTrue(check.failureReason().startsWith("물체 정착 확인 불가"), check.failureReason());
 		assertTrue(check.lastTarget().isEmpty());
 		assertTrue(server.requests("POST").isEmpty());
 	}
@@ -173,6 +176,78 @@ class AlignHeldObjectTest {
 																			0.0002, FAST, Duration.ZERO));
 		assertThrows(IllegalArgumentException.class, () -> FAST.withMaxPasses(0));
 		assertTrue(server.requests.isEmpty());
+	}
+
+	@Test void cancellationDuringCorrectionStopsBeforeVerifying() throws Exception {
+		drifts(0, 0.0003, 0.00045);
+		CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+		server.on("POST", "/operations/move_linear", req -> {
+			entered.countDown(); await(release);
+			return FakeTwinServer.json(200, Map.of("status", "COMPLETED", "outputs", Map.of("closed_loop", true)));
+		});
+		AlignHeldObject align = align(0.0002);
+		align.start();
+		try {
+			assertTrue(entered.await(3, TimeUnit.SECONDS));
+			assertEquals(AlignHeldObject.Stage.CORRECT, align.getProgress().activeStage().orElseThrow());
+			assertTrue(align.cancel(true));
+			int observed = server.requests("GET /variables/scene_objects").size();
+			release.countDown();
+			assertThrows(CancellationException.class, () -> align.get(3, TimeUnit.SECONDS));
+			List<AlignHeldObject.Stage> stages = align.getProgress().steps().stream().map(StepResult::stage).toList();
+			assertEquals(List.of(AlignHeldObject.Stage.SETTLE, AlignHeldObject.Stage.MEASURE, AlignHeldObject.Stage.CORRECT),
+						stages);
+			assertEquals(observed, server.requests("GET /variables/scene_objects").size(), "no verify after cancellation");
+			assertEquals(1, server.requests("POST").size());
+		}
+		finally { release.countDown(); }
+	}
+
+	@Test void cancellationDuringVerifyObservationStopsFurtherPasses() throws Exception {
+		drifts(0, 0.0003, 0.00045);
+		CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+		server.on("GET", "/variables/scene_objects", req -> {
+			boolean verifying;
+			synchronized ( this ) { verifying = m_moves > 0; }
+			if ( verifying ) { entered.countDown(); await(release); }
+			return FakeTwinServer.json(200, sceneEnvelope());
+		});
+		AlignHeldObject align = align(0.0002);
+		align.start();
+		try {
+			assertTrue(entered.await(3, TimeUnit.SECONDS));
+			assertEquals(AlignHeldObject.Stage.VERIFY, align.getProgress().activeStage().orElseThrow());
+			assertTrue(align.cancel(true));
+			release.countDown();
+			assertThrows(CancellationException.class, () -> align.get(3, TimeUnit.SECONDS));
+			assertEquals(1, server.requests("POST").size(), "no second correction after cancellation");
+			assertTrue(server.requests("DELETE").isEmpty());
+		}
+		finally { release.countDown(); }
+	}
+
+	private static void await(CountDownLatch latch) {
+		try { latch.await(5, TimeUnit.SECONDS); }
+		catch ( InterruptedException e ) { Thread.currentThread().interrupt(); }
+	}
+
+	@Test void builderRequiresEveryRoleAndMatchesTheConstructor() throws Exception {
+		var twin = server.client();
+		IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+				() -> AlignHeldObject.builder(twin, "peg").entry(ENTRY).commandZ(TRAVEL_Z).commandOrientation(ORIENTATION).build());
+		assertEquals("acceptRadiusM is not set", e.getMessage());
+		assertThrows(IllegalArgumentException.class,
+				() -> AlignHeldObject.builder(twin, "peg").entry(ENTRY).commandOrientation(ORIENTATION).acceptRadiusM(0.001).build());
+		assertThrows(IllegalArgumentException.class,
+				() -> AlignHeldObject.builder(twin, " peg").entry(ENTRY).commandZ(TRAVEL_Z).commandOrientation(ORIENTATION)
+										.acceptRadiusM(0.001).build());
+		assertTrue(server.requests.isEmpty());
+
+		drifts(0, 0.0003, 0.00045);
+		AlignHeldObject.Check check = AlignHeldObject.builder(twin, "peg").entry(ENTRY).commandZ(TRAVEL_Z)
+				.commandOrientation(ORIENTATION).acceptRadiusM(0.0002).options(FAST).build().run();
+		assertTrue(check.goalReached());
+		assertEquals(TRAVEL_Z, check.lastTarget().orElseThrow().position().z(), 1e-12);
 	}
 
 	private AlignHeldObject align(double acceptRadius) {

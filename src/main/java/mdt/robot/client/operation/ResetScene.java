@@ -1,5 +1,7 @@
 package mdt.robot.client.operation;
 
+import static mdt.robot.client.operation.OperationInputs.defaultTimeout;
+
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Map;
@@ -24,7 +26,7 @@ import utils.Preconditions;
  * 현재 서버 기본 seed는 0이므로 같은 레시피·추출 방식에서는 같은 요청 배치가 반복된다.
  * 다양한 배치가 필요하면 호출자가 seed를 바꿔야 한다. 고정 위치 레시피는 seed와 무관하다.
  * 제공 서버는 scene과 arm 자원을 함께 잡으므로 팔 이동 중에는 409 RESOURCE_BUSY로 거부될 수 있다.
- * 원격 FAILED/CANCELLED나 출력 확인 불가는 applied=false 결과로 정상 완료하며,
+ * 원격 FAILED/CANCELLED나 출력 확인 불가는 goalReached=false 결과로 정상 완료하며,
  * 접수 거부·통신 오류는 ExecutionException의 원인으로 전달한다.
  * <p>
  * 현재 제공 서버에서는 동기 연산이다. start()도 원격 비동기 세션을 만들지 않으므로
@@ -37,18 +39,23 @@ import utils.Preconditions;
  */
 public final class ResetScene extends AbstractRobotTwinOperation<ResetScene.Check> {
 	/**
-	 * applied는 원격 COMPLETED, 배치의 기본 형식 유효, applied_count와 배열 크기의 일치를 뜻한다.
-	 * 빈 objects와 applied_count=0도 유효하다. false의 이유는 why, 원래 출력은 result에서 확인한다.
+	 * goalReached는 원격 COMPLETED, 배치의 기본 형식 유효, applied_count와 배열 크기의 일치를 뜻한다.
+	 * 빈 objects와 applied_count=0도 유효하다. false의 이유는 failureReason, 원래 출력은 result에서 확인한다.
 	 * 배치의 기본 검사는 고유한 비어 있지 않은 name과 유한한 position.x/y/z에 한정한다.
 	 * type·dimensions·orientation 등 작업별 요구사항은 호출자가 검사한다. JsonNode 출력은 읽기 전용으로 취급한다.
 	 * observation은 선택적 관측 결과이며 관측 미설정/적용 확인 실패 시 empty다.
-	 * 관측 미확인은 applied와 why를 바꾸지 않는다. 관측 사유는 observation에서 확인한다.
+	 * 관측 미확인은 goalReached와 failureReason을 바꾸지 않는다. 관측 사유는 observation에서 확인한다.
 	 */
-	public record Check(boolean applied, @Nullable String why, OperationResult result,
-			Optional<WaitForFreshVariable.Result> observation) {
+	public record Check(boolean goalReached, @Nullable String failureReason, OperationResult result,
+			Optional<WaitForFreshVariable.Result> observation) implements StepVerdict {
 		/** 관측을 수행하지 않은 기존 결과 생성 계약. */
-		public Check(boolean applied, @Nullable String why, OperationResult result) {
-			this(applied, why, result, Optional.empty());
+		public Check(boolean goalReached, @Nullable String failureReason, OperationResult result) {
+			this(goalReached, failureReason, result, Optional.empty());
+		}
+
+		@Override
+		public @Nullable String failureReason() {
+			return goalReached ? null : failureReason;
 		}
 	}
 
@@ -80,7 +87,7 @@ public final class ResetScene extends AbstractRobotTwinOperation<ResetScene.Chec
 
 	/**
 	 * observationOptions가 있으면 적용 확인 후 scene_objects의 새 발행을 기다린다.
-	 * 관측 시간 초과/시각 누락은 observation에 담으며 applied를 바꾸지 않는다.
+	 * 관측 시간 초과/시각 누락은 observation에 담으며 goalReached를 바꾸지 않는다.
 	 * 관측 통신 오류는 FAILED, 관측 중 취소/인터럽트는 CANCELLED이며 원격 결과는 유지한다.
 	 * null이면 기존처럼 관측하지 않는다. 관측은 원격 자원 잠금을 연장하지 않는다.
 	 */
@@ -101,14 +108,14 @@ public final class ResetScene extends AbstractRobotTwinOperation<ResetScene.Chec
 	}
 
 	@Override
-	protected boolean requiresObservation(OperationResult result) {
+	protected boolean observesAfterRemote(OperationResult result) {
 		return m_observationOptions != null && result.isCompleted();
 	}
 
 	@Override
-	protected Check convertResult(OperationResult result) throws InterruptedException, ExecutionException {
+	protected Check judgeResult(OperationResult result) throws InterruptedException, ExecutionException {
 		Check applied = checkApplied(result);
-		if ( !applied.applied() || m_observationOptions == null ) { return applied; }
+		if ( !applied.goalReached() || m_observationOptions == null ) { return applied; }
 		WaitForFreshVariable.Result observed = new WaitForFreshVariable(m_twin, "scene_objects", m_observationOptions).run();
 		return new Check(true, null, result, Optional.of(observed));
 	}

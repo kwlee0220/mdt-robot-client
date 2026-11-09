@@ -25,8 +25,9 @@ dependencies {
 
 	// 공개 API 가 JsonNode 를 주고받는다.
 	api libs.jackson.databind
-	// utils.rpc.restful 이 OkHttpClient 를 받는다.
-	implementation libs.okhttp
+	// 공개 API RobotTwinClient.Builder.httpClient(OkHttpClient) 가 OkHttpClient 를 받는다.
+	// (utils 는 okhttp 를 implementation 으로만 선언하므로 여기서 api 로 내보낸다.)
+	api libs.okhttp
 	implementation libs.slf4j.api
 
 	compileOnly libs.jetbrains.annotations		// @Nullable

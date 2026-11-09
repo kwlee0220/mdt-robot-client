@@ -43,7 +43,7 @@ class WaitForFreshVariableTest {
 		WaitForFreshVariable wait = new WaitForFreshVariable(server.client(), "scene_objects", FAST);
 		assertTrue(server.requests.isEmpty());
 		WaitForFreshVariable.Result result = wait.run();
-		assertTrue(result.fresh());
+		assertTrue(result.goalReached());
 		assertEquals(4, reads.get());
 		assertEquals(2, result.diagnostics().updates());
 		assertEquals(1, result.diagnostics().duplicates());
@@ -65,7 +65,7 @@ class WaitForFreshVariableTest {
 				}));
 		WaitForFreshVariable.Result result = new WaitForFreshVariable(server.client(), "scene_objects",
 				new WaitForFreshVariable.Options(2, Duration.ofMillis(200), FAST.poll())).run();
-		assertFalse(result.fresh());
+		assertFalse(result.goalReached());
 		assertTrue(result.sample().isEmpty());
 		assertEquals(switch ( mode ) {
 			case "missing", "bad_time", "overflow_stamp" -> WaitForFreshVariable.Outcome.NO_VALID_TIMESTAMP;
@@ -86,7 +86,7 @@ class WaitForFreshVariableTest {
 			return sample(t, mode.equals("kind") && n >= 3);
 		});
 		WaitForFreshVariable.Result result = new WaitForFreshVariable(server.client(), "scene_objects", FAST).run();
-		assertTrue(result.fresh());
+		assertTrue(result.goalReached());
 		assertEquals(mode.equals("invalid") ? 6 : 5, reads.get());
 		assertEquals(1, result.diagnostics().resets());
 		assertEquals(2, result.diagnostics().updates());
@@ -100,7 +100,7 @@ class WaitForFreshVariableTest {
 					: "2026-10-24T00:00:0" + (n - 2) + "Z";
 			return FakeTwinServer.json(200, Map.of("quality", "OK", "received_at", time, "value", Map.of()));
 		});
-		assertTrue(new WaitForFreshVariable(server.client(), "scene_objects", FAST).run().fresh());
+		assertTrue(new WaitForFreshVariable(server.client(), "scene_objects", FAST).run().goalReached());
 		assertEquals(4, reads.get());
 	}
 
@@ -113,14 +113,15 @@ class WaitForFreshVariableTest {
 		});
 		WaitForFreshVariable.Result result = new WaitForFreshVariable(server.client(), "scene_objects",
 				new WaitForFreshVariable.Options(1, Duration.ofMillis(150), FAST.poll())).run();
-		assertFalse(result.fresh());
+		assertFalse(result.goalReached());
 		assertEquals(1, result.diagnostics().lateSamples());
 	}
 
 	@Test void zeroTimeoutAndPreStartCancellationDoNotRead() throws Exception {
 		WaitForFreshVariable wait = new WaitForFreshVariable(server.client(), "scene_objects",
 				new WaitForFreshVariable.Options(2, Duration.ZERO, FAST.poll()));
-		assertEquals(WaitForFreshVariable.Outcome.NO_VALID_SAMPLE, wait.run().outcome());
+		// 읽지 못한 채 끝나면 '유효 표본 없음'이 아니라 시간 초과다.
+		assertEquals(WaitForFreshVariable.Outcome.TIMEOUT, wait.run().outcome());
 		WaitForFreshVariable cancelled = new WaitForFreshVariable(server.client(), "scene_objects");
 		assertTrue(cancelled.cancel(false));
 		assertThrows(CancellationException.class, cancelled::get);
@@ -136,10 +137,9 @@ class WaitForFreshVariableTest {
 		wait.start();
 		assertThrows(IllegalStateException.class, wait::start);
 		assertThrows(IllegalStateException.class, wait::run);
-		assertFalse(wait.cancel(true));
 		assertEquals(1, queued.size());
 		queued.get(0).run();
-		assertFalse(wait.get().fresh());
+		assertFalse(wait.get().goalReached());
 	}
 
 	@ParameterizedTest @ValueSource(booleans = { false, true })
@@ -295,7 +295,7 @@ class WaitForFreshVariableTest {
 				"quality", "OK", "received_at", Instant.ofEpochSecond(reads.incrementAndGet()).toString(),
 				"value", Map.of("objects", Map.of()))));
 		WaitForFreshVariable.Result result = new WaitForFreshVariable(server.client(), "scene_objects", FAST).run();
-		assertTrue(result.fresh());
+		assertTrue(result.goalReached());
 		assertEquals(3, reads.get());
 		assertTrue(result.sample().orElseThrow().at("/value/objects").isEmpty());
 	}

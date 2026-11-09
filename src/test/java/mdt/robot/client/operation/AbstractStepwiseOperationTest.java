@@ -150,7 +150,7 @@ class AbstractStepwiseOperationTest {
 		return progress.activeStage().map(Enum::name).orElse("idle") + ":" + progress.steps().size();
 	}
 
-	private static class TestSequence extends AbstractStepwiseOperation<Phase, StepwiseProgress<Phase>> {
+	private static class TestSequence extends AbstractStepSequenceOperation<Phase, StepwiseProgress<Phase>> {
 		Phase failedStage;
 		CountDownLatch converting;
 		CountDownLatch finish;

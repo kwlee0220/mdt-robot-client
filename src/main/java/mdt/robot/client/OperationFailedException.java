@@ -3,8 +3,8 @@ package mdt.robot.client;
 /**
  * 연산이 <b>접수된 뒤</b> 실패로 끝났다 ({@code status} 가 {@code COMPLETED} 가 아니다).
  * <p>
- * {@link RobotTwinClient#outputs} 가 던진다. {@link RobotTwinClient#run} 은 실패해도 상태를 그대로
- * 돌려주므로, 결과를 쓸 것이라면 {@code outputs} 를 써서 실패를 놓치지 않는다. 트윈이 준 사유가
+ * {@link RobotTwinClient#runForOutputs} 가 던진다. {@link RobotTwinClient#run} 은 실패해도 상태를 그대로
+ * 돌려주므로, 결과를 쓸 것이라면 {@code runForOutputs} 를 써서 실패를 놓치지 않는다. 트윈이 준 사유가
  * {@link #getResult()} 에 그대로 실린다.
  *
  * @author Kang-Woo Lee (ETRI)

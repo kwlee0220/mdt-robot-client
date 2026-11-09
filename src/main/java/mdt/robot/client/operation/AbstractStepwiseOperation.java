@@ -22,17 +22,17 @@ import utils.async.AsyncState;
  * 단계 실행·후속 단계 중단·취소 전달·예외와 원격 결과 보존은 이 클래스가 맡는다.
  * 하위 클래스는 실행 순서와 최종 결과 해석만 제공한다. 생성자는 통신하지 않는다.
  * <p>
- * 실행 순서는 두 가지로 줄 수 있다. 단계 목록을 생성자에 주면 그 순서대로 실행한다(Grasp·Place).
- * 목록 없이 생성하면 하위 클래스가 {@link #nextStep(StepwiseProgress)}에서 직전 결과를 보고 다음 단계를
- * 정한다. 같은 단계 이름을 여러 번 쓸 수 있으므로 보정을 반복하는 연산에 쓴다.
+ * 하위 클래스는 {@link #nextStep(StepwiseProgress)}에서 직전 결과를 보고 다음 단계를 정한다. 같은 단계 이름을
+ * 여러 번 쓸 수 있으므로 보정을 반복하는 연산(Pick·AlignHeldObject)에 쓴다. 정해진 단계 목록을 차례로 실행하는
+ * 연산(Grasp·Place)은 {@link AbstractStepSequenceOperation}을 상속한다.
  * <p>
  * 각 단계는 독립된 미실행 하위 객체를 사용해야 하며 실행 중 외부에서 직접 제어하지 않는다.
  * 한 단계가 목표를 확인하지 못하면 이후 단계를 수행하지 않고 결과를 반환한다.
- * 지원하는 하위 판정은 MoveCheck, GripperCheck, WaitUntilObjectStill.Result, MeasureObjectOffset.Result다.
+ * 단계의 하위 연산은 판정({@link StepVerdict})을 돌려주는 연산이어야 한다.
  * <p>
  * cancel(true)는 후속 단계 중단을 먼저 접수하고 현재 하위 취소를 잠금 밖에서 시도한다.
  * 하위 취소 불가·거부·오류인 경우에도 후속 단계는 실행하지 않는다. 동기 HTTP는 종료를 기다린다.
- * 원격 정지를 보장하지 않으며 자동 복구·재시도는 하지 않는다. STARTING 중 취소는 거부한다.
+ * 원격 정지를 보장하지 않으며 자동 복구·재시도는 하지 않는다. STARTING 중 취소는 기록해 첫 단계 전에 끝낸다.
  * 시도 기록은 단계 진입과 함께 같은 잠금으로 갱신하며 전송 여부를 단정하지 않는다.
  */
 public abstract class AbstractStepwiseOperation<S extends Enum<S>, C>
@@ -42,7 +42,7 @@ public abstract class AbstractStepwiseOperation<S extends Enum<S>, C>
 	 * 단계 이름과 해당 단계가 소유하는 한 번의 하위 실행. 하위 실행은 로봇 트윈 연산
 	 * ({@link AbstractRobotTwinOperation})이거나 관측 연산({@link AbstractObservationOperation})이다.
 	 */
-	protected record Step<S extends Enum<S>>(S stage, AbstractThreadedExecution<?> operation) {
+	protected record Step<S extends Enum<S>>(S stage, AbstractThreadedExecution<? extends StepVerdict> operation) {
 		public Step {
 			Preconditions.checkNotNullArgument(stage, "stage is null");
 			Preconditions.checkNotNullArgument(operation, "operation is null");
@@ -51,8 +51,6 @@ public abstract class AbstractStepwiseOperation<S extends Enum<S>, C>
 		}
 	}
 
-	// 단계 목록을 받지 않고 생성하면 null이며, 하위 클래스가 nextStep()을 구현한다.
-	private final @Nullable List<Step<S>> m_sequence;
 	private final Object m_control = new Object();
 	// 아래 실행 상태는 m_control로 보호한다.
 	private final List<StepResult<S>> m_steps = new ArrayList<>();
@@ -67,27 +65,11 @@ public abstract class AbstractStepwiseOperation<S extends Enum<S>, C>
 	private Throwable m_cancellationFailure;
 	private boolean m_finished;
 
-	/** 주어진 단계 목록을 순서대로 실행한다. 단계 이름과 하위 실행은 서로 겹치면 안 된다. */
-	protected AbstractStepwiseOperation(List<Step<S>> sequence) {
-		Preconditions.checkNotNullArgument(sequence, "sequence is null");
-		Preconditions.checkArgument(!sequence.isEmpty(), "sequence must not be empty");
-		Set<S> stages = new HashSet<>();
-		for ( Step<S> step : sequence ) {
-			Preconditions.checkNotNullArgument(step, "step is null");
-			Preconditions.checkArgument(stages.add(step.stage()), "duplicate stage: " + step.stage());
-			Preconditions.checkArgument(m_usedOperations.add(step.operation()), "a child operation cannot be reused");
-			Preconditions.checkArgument(step.operation().isNotStarted(), "child operation has already started");
-		}
-		m_sequence = List.copyOf(sequence);
-	}
-
 	/**
-	 * 실행 중에 다음 단계를 정하는 연산을 만든다. 하위 클래스는 {@link #nextStep(StepwiseProgress)}를 구현한다.
+	 * 하위 클래스가 {@link #nextStep(StepwiseProgress)}에서 다음 단계를 정하는 연산을 만든다.
 	 * 같은 단계 이름은 여러 번 쓸 수 있지만, 하위 실행 객체는 단계마다 새로 만들어야 한다.
 	 */
-	protected AbstractStepwiseOperation() {
-		m_sequence = null;
-	}
+	protected AbstractStepwiseOperation() { }
 
 	/** failedStep은 모든 단계의 목표를 확인하면 null. 예외·취소 경로에서는 호출하지 않는다. */
 	protected abstract C createResult(@Nullable StepResult<S> failedStep, StepwiseProgress<S> progress);
@@ -99,18 +81,11 @@ public abstract class AbstractStepwiseOperation<S extends Enum<S>, C>
 	 * 첫 단계 전과 목표를 확인한 단계마다 한 번씩, 내부 잠금 안에서 호출된다. 목표를 확인하지 못한 단계나
 	 * 예외·취소 뒤에는 호출되지 않는다. 잠금 안에서 실행되므로 <b>통신·대기 없이 메모리 안의 계산만</b> 해야 한다.
 	 * 반환하는 하위 실행은 아직 시작하지 않은 새 객체여야 하며, 이미 쓴 객체를 다시 주면 실행이 실패한다.
-	 * 기본 구현은 생성자에서 받은 단계 목록을 차례로 돌려준다.
 	 *
 	 * @param progress	지금까지의 진행 스냅샷.
 	 * @return	다음 단계. 끝이면 {@link Optional#empty()}.
 	 */
-	protected Optional<Step<S>> nextStep(StepwiseProgress<S> progress) {
-		if ( m_sequence == null ) {
-			throw new IllegalStateException(getClass().getSimpleName() + " must override nextStep()");
-		}
-		int index = progress.steps().size();
-		return (index < m_sequence.size()) ? Optional.of(m_sequence.get(index)) : Optional.empty();
-	}
+	protected abstract Optional<Step<S>> nextStep(StepwiseProgress<S> progress);
 
 	/** 워크플로가 단계 enum의 종류와 무관하게 조회할 수 있는 공통 진행 타입. */
 	public StepwiseProgress<S> getProgress() { return snapshot(); }
@@ -135,7 +110,16 @@ public abstract class AbstractStepwiseOperation<S extends Enum<S>, C>
 				return super.cancel(interrupt);
 			}
 			if ( isCancelled() ) { return super.cancel(interrupt); }
-			if ( !interrupt || isDone() || getState() == AsyncState.STARTING ) { return false; }
+			if ( !interrupt || isDone() ) { return false; }
+			if ( getState() == AsyncState.STARTING ) {
+				// 시작 직후면 기록만 한다. 첫 단계를 시작하기 전에 확인하고 취소로 끝낸다.
+				synchronized ( m_control ) {
+					if ( m_finished ) { return false; }
+					m_cancelRequested = true;
+					m_childCancellationState = ChildCancellationState.NOT_NEEDED;
+				}
+				return true;
+			}
 		}
 		finally { m_aopGuard.unlock(); }
 		AbstractThreadedExecution<?> active;
@@ -185,7 +169,7 @@ public abstract class AbstractStepwiseOperation<S extends Enum<S>, C>
 	private @Nullable Step<S> takeNextStep() {
 		Step<S> next = nextStep(snapshot()).orElse(null);
 		// 생성자에서 검증한 고정 목록과 달리, 실행 중에 정한 단계는 여기서 검증한다.
-		if ( next != null && m_sequence == null ) {
+		if ( next != null ) {
 			if ( !m_usedOperations.add(next.operation()) ) {
 				throw new IllegalStateException("a child operation cannot be reused: " + next.stage());
 			}
@@ -224,7 +208,7 @@ public abstract class AbstractStepwiseOperation<S extends Enum<S>, C>
 			Optional<OperationResult> remoteResult = remoteResultOf(operation);
 			synchronized ( m_control ) {
 				Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-				m_steps.add(new StepResult<>(stage, null, null, remoteResult, cause));
+				m_steps.add(new StepResult<>(stage, null, remoteResult, cause));
 				m_active = null;
 				m_stage = null;
 				m_finished = true;
@@ -235,10 +219,7 @@ public abstract class AbstractStepwiseOperation<S extends Enum<S>, C>
 		// 이 조회도 하위 취소의 잠금을 기다릴 수 있으므로 부모 잠금 밖에서 수행한다.
 		Optional<OperationResult> remoteResult = remoteResultOf(operation);
 		synchronized ( m_control ) {
-			StepResult<S> step = new StepResult<>(stage, value instanceof MoveCheck move ? move : null,
-					value instanceof GripperCheck gripper ? gripper : null, remoteResult, null,
-					value instanceof WaitUntilObjectStill.Result still ? still : null,
-					value instanceof MeasureObjectOffset.Result measured ? measured : null);
+			StepResult<S> step = new StepResult<>(stage, (StepVerdict)value, remoteResult, null);
 			m_steps.add(step); // 접수된 취소보다 먼저 실제로 받은 결과를 기록한다.
 			m_active = null;
 			m_stage = null;

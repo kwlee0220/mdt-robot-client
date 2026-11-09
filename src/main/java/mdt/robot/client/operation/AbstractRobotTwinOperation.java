@@ -18,8 +18,15 @@ import utils.async.AsyncState;
  * 원격 연산 한 번의 호출·결과 변환을 수행하는 로봇 연산의 공통 실행부.
  * <p>
  * 생성자는 통신하지 않으며 run()/start()로 한 번 실행한다. 하위 클래스는 입력과 결과 판정을 구현한다.
- * 원격 비동기 세션 확보 후 cancel(true)는 DELETE를 보내고 최종 응답을 기다린다.
- * 세션 확보 전·동기 HTTP 호출 중·실행 후 cancel(false)는 취소하지 않는다.
+ * cancel(true)는 다음과 같이 처리한다.
+ * <ul>
+ *   <li><b>시작 직후·연산 종류 확인 전</b>: 취소를 기록하고 {@code true}를 반환한다. 원격 연산은 보내지 않는다.</li>
+ *   <li><b>비동기 연산</b>: 세션이 있으면 DELETE를 보내고 최종 응답을 기다린다. 시작 POST의 응답(세션)
+ *       전이면 취소를 기록하고, 세션을 받는 즉시 DELETE가 나간다.</li>
+ *   <li><b>동기 연산의 HTTP 호출 중</b>: 중단할 수 없으므로 {@code false}다.</li>
+ * </ul>
+ * cancel(false)는 실행 중이면 취소하지 않는다.
+ * 취소를 접수한 뒤의 원격 대기 실패(시간 초과, 세션 회수)는 실패가 아니라 취소로 끝난다.
  * 원격 결과 대기 상한은 timeout이며 후속 관측 대기나 전체 실행 시간의 상한은 아니다.
  * <p>
  * 인터럽트 인식 시 로컬 실행을 취소한다. 동기 HTTP의 블로킹 읽기는 즉시 중단을 보장하지 않으며,
@@ -39,6 +46,9 @@ public abstract class AbstractRobotTwinOperation<T> extends AbstractThreadedExec
 	private OperationResult m_remoteResult;
 	private Thread m_observationThread;
 	private boolean m_cancelRequested;
+	// 연산 종류(동기/비동기)를 확인했는지와 그 결과. 동기 HTTP 호출은 취소할 수 없다.
+	private boolean m_kindResolved;
+	private boolean m_async;
 
 	protected AbstractRobotTwinOperation(RobotTwinClient twin, String operation, Duration timeout) {
 		Preconditions.checkNotNullArgument(twin, "twin is null");
@@ -50,9 +60,13 @@ public abstract class AbstractRobotTwinOperation<T> extends AbstractThreadedExec
 		m_timeout = timeout;
 	}
 
-	protected static Duration defaultTimeout(RobotTwinClient twin) {
-		Preconditions.checkNotNullArgument(twin, "twin is null");
-		return twin.getOperationTimeout();
+	/**
+	 * 원격 결과를 기다리는 상한을 반환한다. 후속 관측(정착 확인 등) 시간은 포함하지 않는다.
+	 *
+	 * @return	원격 결과 대기 상한.
+	 */
+	public final Duration getRemoteTimeout() {
+		return m_timeout;
 	}
 
 	/**
@@ -71,34 +85,38 @@ public abstract class AbstractRobotTwinOperation<T> extends AbstractThreadedExec
 	protected abstract Map<String,?> buildInputs();
 
 	/**
-	 * 원격 결과를 도메인 결과로 바꾼다. 필요한 경우 후속 관측도 이 메서드에서 수행한다.
+	 * 원격 결과로 도메인 판정(도달·정착 등)을 내린다. 필요한 경우 후속 관측도 이 메서드에서 수행한다.
 	 * 관측 실행의 checked 예외는 그대로 전달할 수 있다. 접수된 관측 취소는 실패보다 우선한다.
 	 */
-	protected abstract T convertResult(OperationResult result) throws InterruptedException, ExecutionException;
+	protected abstract T judgeResult(OperationResult result) throws InterruptedException, ExecutionException;
 
 	/**
-	 * 결과 변환 중 인터럽트 가능한 관측 대기가 필요한지 판정한다. 통신 없이 즉시 반환해야 한다.
+	 * 원격 결과를 받은 뒤 judgeResult에서 인터럽트 가능한 관측(정착 대기 등)을 하는지 판정한다. 통신 없이 즉시
+	 * 반환해야 한다.
 	 * true이면 해당 단계에서 cancel(true)가 작업 스레드를 인터럽트한다.
 	 */
-	protected boolean requiresObservation(OperationResult result) {
+	protected boolean observesAfterRemote(OperationResult result) {
 		return false;
 	}
 
 	/** true는 취소 요청 접수이며, 종료는 get()/상태로 별도 확인한다. */
 	@Override
 	public final boolean cancel(boolean mayInterruptIfRunning) {
+		boolean starting;
 		m_aopGuard.lock();
 		try {
 			if ( isNotStarted() || isCancelled() ) {
 				return super.cancel(mayInterruptIfRunning);
 			}
-			if ( !mayInterruptIfRunning || isDone() || getState() == AsyncState.STARTING ) {
+			if ( !mayInterruptIfRunning || isDone() ) {
 				return false;
 			}
+			starting = getState() == AsyncState.STARTING;
 		}
 		finally {
 			m_aopGuard.unlock();
 		}
+		RobotTwinClient.AsyncOperation remote = null;
 		synchronized ( m_control ) {
 			if ( m_cancelRequested ) {
 				return true;
@@ -107,24 +125,63 @@ public abstract class AbstractRobotTwinOperation<T> extends AbstractThreadedExec
 				m_cancelRequested = true;
 				m_observationThread.interrupt();
 			}
-			else if ( m_remote != null && m_remote.cancel() ) {
-				m_cancelRequested = true;
+			else if ( m_remote != null ) {
+				remote = m_remote;
 			}
-			else {
+			else if ( m_remoteResult != null ) {
+				// 원격 결과를 이미 받았고 중단할 관측도 없다(결과 변환 중). 원격 연산은 끝났다.
 				return false;
 			}
+			else if ( m_kindResolved && !m_async ) {
+				// 동기 연산의 HTTP 호출 중이다. 중단할 수 없다.
+				return false;
+			}
+			else {
+				// 시작 직후, 연산 종류 확인 중, 또는 비동기 연산의 핸들을 받기 전이다. 기록해 두면 작업 스레드가
+				// 원격 연산을 보내기 전에 멈추거나, 핸들을 받는 즉시 취소를 전달한다.
+				m_cancelRequested = true;
+			}
 		}
-		// HTTP 요청 동안 실행 상태 lock은 잡지 않는다.
-		notifyCancelling();
+		if ( remote != null ) {
+			// DELETE는 잠금 밖에서 보낸다. 그동안 결과 조회(getRemoteResult)나 작업 스레드가 막히지 않는다.
+			if ( !remote.cancel() ) {
+				return false;
+			}
+			synchronized ( m_control ) {
+				m_cancelRequested = true;
+			}
+		}
+		if ( !starting ) {
+			// STARTING이면 상태 전이는 작업 스레드가 RUNNING에 들어간 뒤 취소로 끝낼 때 일어난다.
+			notifyCancelling();
+		}
 		return true;
 	}
 
 	@Override
 	protected final T executeWork() throws InterruptedException, ExecutionException {
 		try {
-			OperationResult result = m_twin.runCancellable(m_operation, buildInputs(), m_timeout, remote -> {
+			// 시작 직후(STARTING) 기록된 취소면 아무 요청도 보내지 않고 끝낸다.
+			synchronized ( m_control ) {
+				checkCancellation();
+			}
+			Map<String,?> inputs = buildInputs();
+			// 연산 종류를 정한다(카탈로그는 캐시된다). 그 사이 기록된 취소가 있으면 원격 연산을 보내지 않는다.
+			boolean async = m_twin.isAsyncOperation(m_operation);
+			synchronized ( m_control ) {
+				m_async = async;
+				m_kindResolved = true;
+				checkCancellation();
+			}
+			OperationResult result = m_twin.run(m_operation, inputs, m_timeout, remote -> {
+				boolean deliver;
 				synchronized ( m_control ) {
 					m_remote = remote;
+					deliver = m_cancelRequested;
+				}
+				if ( deliver ) {
+					// 핸들을 받기 전에 기록된 취소. 세션 전이면 핸들이 기록해 두었다가 세션을 받는 즉시 보낸다.
+					remote.cancel();
 				}
 			});
 			synchronized ( m_control ) {
@@ -132,11 +189,11 @@ public abstract class AbstractRobotTwinOperation<T> extends AbstractThreadedExec
 				m_remoteResult = result;
 				m_remote = null;
 				checkCancellation();
-				if ( requiresObservation(result) ) {
+				if ( observesAfterRemote(result) ) {
 					m_observationThread = Thread.currentThread();
 				}
 			}
-			T converted = convertResult(result);
+			T converted = judgeResult(result);
 			synchronized ( m_control ) {
 				checkCancellation();
 				m_observationThread = null;
@@ -158,9 +215,11 @@ public abstract class AbstractRobotTwinOperation<T> extends AbstractThreadedExec
 		}
 		catch ( RuntimeException | ExecutionException e ) {
 			synchronized ( m_control ) {
-				if ( m_cancelRequested && m_observationThread != null ) {
+				if ( m_cancelRequested ) {
+					// 취소를 접수한 뒤의 실패(관측 중단, 감속이 길어 생긴 대기 시간 초과, 세션 회수 등)는 취소로 끝낸다.
 					Thread.interrupted();
-					CancellationException cancelled = new CancellationException("observation cancelled");
+					CancellationException cancelled = new CancellationException(
+							m_observationThread != null ? "observation cancelled" : "operation cancelled");
 					cancelled.initCause(e);
 					throw cancelled;
 				}

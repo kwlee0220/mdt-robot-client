@@ -39,6 +39,7 @@ import utils.http.RESTfulIOException;
 import utils.http.RESTfulRemoteException;
 import utils.rpc.restful.RESTfulAsyncRpcClient;
 import utils.rpc.restful.RESTfulRpcClient;
+import utils.rpc.restful.UnexpectedRpcStateException;
 import utils.rpc.restful.RpcRequestMessage;
 
 /**
@@ -56,8 +57,11 @@ import utils.rpc.restful.RpcRequestMessage;
  * </ul>
  * 연산 종류는 트윈의 연산 카탈로그({@code GET /operations})에서 읽어 캐시한다.
  * <p>
- * 제공 트윈은 환경(mock · Isaac · 펑션베이)과 무관하게 {@code 127.0.0.1:8801 / panda01} 이다. 접속
- * 주소로는 환경을 알 수 없으므로 {@link #meta()} 의 {@code backend} 나 {@link #requireBackend} 로 확인한다.
+ * 제공 트윈의 포트(8801)는 환경과 무관하게 같지만, <b>트윈 id는 환경마다 다르다</b>: Isaac은
+ * {@code panda01}, 펑션베이는 {@code rdfp01}이다(rdfp_ws {@code robot_twin/config/twins/}). 기본 id
+ * ({@link #DEFAULT_TWIN_ID})는 Isaac 트윈이므로 펑션베이에서는 {@link Builder#twinId}로 지정한다. id가 틀리면
+ * 모든 호출이 오류 코드 없는 404가 되고, {@link TwinException} 메시지에 id 확인 안내가 붙는다.
+ * 트윈 id만으로 환경을 단정하지 말고 {@link #meta()} 의 {@code backend} 나 {@link #requireBackend} 로 확인한다.
  *
  * @author Kang-Woo Lee (ETRI)
  */
@@ -65,11 +69,13 @@ public class RobotTwinClient {
 	private static final Logger s_logger = LoggerFactory.getLogger(RobotTwinClient.class);
 
 	public static final String DEFAULT_BASE_URL = "http://127.0.0.1:8801";
+	/** 기본 트윈 id. Isaac 트윈이다. 펑션베이 트윈은 {@code rdfp01}이므로 {@link Builder#twinId}로 지정한다. */
 	public static final String DEFAULT_TWIN_ID = "panda01";
 
 	private static final String KIND_ASYNC = "async";
 
-	private final String m_rootUrl;		// 서버 루트: scheme://host[:port][/접두어] (끝에 '/' 없음)
+	private final String m_baseUrl;		// 서버 루트: scheme://host[:port][/접두어] (끝에 '/' 없음)
+	private final String m_twinId;
 	private final String m_basePath;	// /api/v1/robot_twins/{id}
 	private final OkHttpClient m_httpClient;
 	private final HttpRESTfulClient m_restClient;
@@ -80,7 +86,8 @@ public class RobotTwinClient {
 	@GuardedBy("this") private Map<String,String> m_operationKinds = null;
 
 	private RobotTwinClient(Builder builder) {
-		m_rootUrl = builder.m_baseUrl;
+		m_baseUrl = builder.m_baseUrl;
+		m_twinId = builder.m_twinId;
 		m_basePath = "/api/v1/robot_twins/" + builder.m_twinId;
 		m_mapper = (builder.m_mapper != null) ? builder.m_mapper : JsonMapper.builder().build();
 		m_pollInterval = builder.m_pollInterval;
@@ -89,7 +96,10 @@ public class RobotTwinClient {
 		// 동기 연산의 POST 응답은 트윈의 `sync_timeout_sec` 뒤에 올 수 있으므로 읽기 제한이 그보다 길어야
 		// 한다 (펑션베이 그리퍼 12초, reset_scene 10초). 짧으면 동작은 서버에서 계속되는데 클라이언트만
 		// 소켓 시간 초과로 먼저 끊긴다.
-		m_httpClient = new OkHttpClient.Builder()
+		// 주입한 클라이언트가 있으면 그 연결 풀·디스패처를 함께 쓰고 제한 시간만 이 클라이언트 값으로 바꾼다.
+		OkHttpClient.Builder http = (builder.m_httpClient != null) ? builder.m_httpClient.newBuilder()
+																	: new OkHttpClient.Builder();
+		m_httpClient = http
 											.connectTimeout(builder.m_httpTimeout)
 											.readTimeout(builder.m_httpTimeout)
 											.writeTimeout(builder.m_httpTimeout)
@@ -116,7 +126,16 @@ public class RobotTwinClient {
 	 * @return	루트 URL. (예: {@code http://127.0.0.1:8801})
 	 */
 	public String getBaseUrl() {
-		return m_rootUrl;
+		return m_baseUrl;
+	}
+
+	/**
+	 * 접속할 트윈의 id를 반환한다. (예: Isaac {@code panda01}, 펑션베이 {@code rdfp01})
+	 *
+	 * @return	트윈 id.
+	 */
+	public String getTwinId() {
+		return m_twinId;
 	}
 
 	/**
@@ -125,7 +144,7 @@ public class RobotTwinClient {
 	 * @return	트윈 API URL.
 	 */
 	public String getTwinUrl() {
-		return m_rootUrl + m_basePath;
+		return m_baseUrl + m_basePath;
 	}
 
 	// ------------------------------------------------------------------
@@ -269,7 +288,7 @@ public class RobotTwinClient {
 	 *
 	 * @param operation	연산 이름.
 	 * @param inputs	입력. 값은 JSON 으로 바뀐다({@link Pose} · {@link JsonNode} · 기본형 · {@code Map}).
-	 * @return	종료 상태. <b>실패해도 예외가 아니라 결과로 돌려준다</b> — 결과를 쓸 것이면 {@link #outputs}.
+	 * @return	종료 상태. <b>실패해도 예외가 아니라 결과로 돌려준다</b> — 결과를 쓸 것이면 {@link #runForOutputs}.
 	 * @see #run(String, Map, Duration)
 	 */
 	public OperationResult run(String operation, Map<String,?> inputs) {
@@ -288,12 +307,14 @@ public class RobotTwinClient {
 	 * @param timeout	비동기 연산을 기다릴 상한.
 	 * @return	종료 상태 — {@code COMPLETED} · {@code FAILED} · {@code CANCELLED}.
 	 * @throws TwinException				트윈이 요청을 접수하지 않은 경우(4xx/5xx).
+	 * @throws SessionLostException			비동기 연산이 접수된 뒤 세션 조회가 HTTP 오류를 받아 결과를 알 수 없는 경우.
 	 * @throws OperationTimeoutException	비동기 연산이 제한 시간 안에 끝나지 않은 경우.
 	 * @throws RESTfulException				통신 실패 등 HTTP 응답이 없는 오류.
 	 */
 	public OperationResult run(String operation, @Nullable Map<String,?> inputs, Duration timeout) {
 		Map<String,JsonNode> args = toJsonInputs(inputs);
-		return isAsync(operation) ? runAsync(operation, args, timeout) : runSync(operation, args);
+		return isAsyncOperation(operation) ? runAsync(operation, args, timeout)
+											: runSync(operation, args, timeout, ignored -> { });
 	}
 
 	/**
@@ -307,7 +328,7 @@ public class RobotTwinClient {
 	 * @return	연산 출력.
 	 * @throws OperationFailedException	연산이 {@code COMPLETED} 가 아닌 상태로 끝난 경우.
 	 */
-	public Map<String,JsonNode> outputs(String operation, @Nullable Map<String,?> inputs) {
+	public Map<String,JsonNode> runForOutputs(String operation, @Nullable Map<String,?> inputs) {
 		OperationResult result = run(operation, inputs);
 		if ( !result.isCompleted() ) {
 			throw new OperationFailedException(result);
@@ -324,7 +345,7 @@ public class RobotTwinClient {
 	 */
 	public JsonNode cancel(String sessionEndpoint) {
 		try {
-			return m_restClient.delete(m_rootUrl + sessionEndpoint, m_restClient.jsonDeserializer());
+			return m_restClient.delete(m_baseUrl + sessionEndpoint, m_restClient.jsonDeserializer());
 		}
 		catch ( RESTfulException e ) {
 			throw translate(e);
@@ -364,7 +385,12 @@ public class RobotTwinClient {
 	// 내부
 	// ------------------------------------------------------------------
 
-	private OperationResult runSync(String operation, Map<String,JsonNode> inputs) {
+	/**
+	 * @param timeout	트윈이 이 연산을 비동기로 바꿔 세션을 돌려준 경우(D10)에만 쓰는 결과 대기 상한.
+	 * @param onStarted	같은 경우에 세션에 붙은 핸들을 받는다.
+	 */
+	private OperationResult runSync(String operation, Map<String,JsonNode> inputs, Duration timeout,
+									Consumer<AsyncOperation> onStarted) {
 		RESTfulRpcClient rpc = RESTfulRpcClient.builder()
 												.setHttpClient(m_httpClient)
 												.setJsonMapper(m_mapper)
@@ -372,17 +398,33 @@ public class RobotTwinClient {
 												.setInputs(inputs)
 												.build();
 		try {
-			return new OperationResult(operation, OperationResult.COMPLETED, rpc.call(), null, null);
+			return new OperationResult(operation, OperationResult.Status.COMPLETED, rpc.call(), null, null);
 		}
 		catch ( ExecutionException e ) {
-			return terminalFailure(operation, e);
+			return terminalFailure(operation, e, null);
 		}
 		catch ( CancellationException e ) {
-			return new OperationResult(operation, OperationResult.CANCELLED, Map.of(), null, null);
+			return new OperationResult(operation, OperationResult.Status.CANCELLED, Map.of(), null, null);
+		}
+		catch ( UnexpectedRpcStateException e ) {
+			// 카탈로그에는 sync인데 트윈이 202 RUNNING으로 세션을 돌려줬다(같은 id의 트윈이 재기동되며 종류가 바뀜).
+			// 원격 연산은 이미 시작됐으므로 세션에 붙어 결과를 기다린다.
+			invalidateOperationKinds();
+			String session = e.getResponse().getSessionEndpoint();
+			if ( session == null ) {
+				throw e;
+			}
+			s_logger.warn("operation '{}' is now asynchronous on the twin; attaching to its session {}", operation, session);
+			checkOperationTimeout(timeout);
+			AsyncOperation execution = attachAsyncOperation(operation, session);
+			onStarted.accept(execution);
+			return execution.await(timeout);
 		}
 		catch ( RESTfulIOException e ) {
 			throwIfHttpInterrupted(operation, e);
-			throw e;
+			// 형식을 알 수 없는 HTTP 오류 본문(예: 경로가 없을 때 서버 프레임워크의 {"detail": ...})도 상태 코드가
+			// 있으면 TwinException으로 바꾼다. 상태 코드가 없으면(연결 실패 등) translate가 그대로 돌려준다.
+			throw translate(e);
 		}
 		catch ( RESTfulException e ) {
 			throw translate(e);
@@ -414,10 +456,10 @@ public class RobotTwinClient {
 	/**
 	 * 비동기 카탈로그 연산을 시작하고 결과 대기·취소용 핸들을 반환한다.
 	 * 카탈로그 조회는 호출 스레드에서 수행하며, POST와 폴링은 별도 스레드에서 수행한다.
-	 * 세션 확보 전 cancel()은 false다. 확보 후 다시 요청할 수 있다.
+	 * 세션 확보 전의 cancel()은 접수되어, 세션을 받는 즉시 DELETE로 전달된다.
 	 */
 	public AsyncOperation startAsync(String operation, Map<String,?> inputs) {
-		Preconditions.checkArgument(isAsync(operation), "not an async operation: " + operation);
+		Preconditions.checkArgument(isAsyncOperation(operation), "not an async operation: " + operation);
 		return startAsyncOperation(operation, toJsonInputs(inputs));
 	}
 
@@ -426,10 +468,12 @@ public class RobotTwinClient {
 	 * {@link #run(String, Map, Duration)}과 같은 종료 결과·예외·대기 상한 계약을 따른다.
 	 * <p>
 	 * 비동기 POST/폴링을 시작한 뒤 결과 대기 전에 호출 스레드에서 onStarted를 한 번 호출한다.
-	 * 이 시점은 서버 접수나 세션 확보를 보장하지 않는다. 핸들의 cancel()은 세션 확보 전에는 false다.
+	 * 이 시점은 서버 접수나 세션 확보를 보장하지 않는다. 핸들의 cancel()은 세션 확보 전에도 접수되며,
+	 * 세션을 받는 즉시 DELETE로 전달된다.
 	 * 콜백은 핸들을 보관하는 짧은 작업에 사용한다. 콜백이 지연되면 await 시작도 지연되며,
 	 * 콜백이 예외를 던져도 이미 시작한 원격 실행은 자동 취소하지 않는다.
 	 * 동기 연산에서는 콜백을 호출하지 않고 HTTP 결과를 반환하며, timeout 대신 httpTimeout을 사용한다.
+	 * 다만 동기로 알던 연산에 트윈이 세션을 돌려주면 그 세션에 붙은 핸들로 콜백을 부르고 timeout을 쓴다.
 	 *
 	 * @param operation 서버 연산 이름.
 	 * @param inputs 연산 입력. null은 빈 입력으로 처리한다.
@@ -437,10 +481,12 @@ public class RobotTwinClient {
 	 * @param onStarted 비동기 실행 핸들을 받는 null이 아닌 콜백.
 	 * @return 원격 종료 결과. 서버 FAILED/CANCELLED도 OperationResult로 반환한다.
 	 */
-	public OperationResult runCancellable(String operation, Map<String,?> inputs, Duration timeout,
+	public OperationResult run(String operation, Map<String,?> inputs, Duration timeout,
 			Consumer<AsyncOperation> onStarted) {
+		Preconditions.checkNotNullArgument(onStarted, "onStarted is null");
 		Map<String,JsonNode> args = toJsonInputs(inputs);
-		return isAsync(operation) ? runAsync(operation, args, timeout, onStarted) : runSync(operation, args);
+		return isAsyncOperation(operation) ? runAsync(operation, args, timeout, onStarted)
+											: runSync(operation, args, timeout, onStarted);
 	}
 
 	private OperationResult runAsync(String operation, Map<String,JsonNode> inputs, Duration timeout) {
@@ -460,7 +506,7 @@ public class RobotTwinClient {
 											.setHttpClient(m_httpClient)
 											.setJsonMapper(m_mapper)
 											// 트윈의 session_endpoint 는 절대 경로라 기준 URL 은 서버 루트다.
-											.setBaseUrl(m_rootUrl)
+											.setBaseUrl(m_baseUrl)
 											.setOperationEndpoint(m_basePath + "/operations/" + operation)
 											.setRequestMessage(new RpcRequestMessage(inputs))
 											.setPollInterval(m_pollInterval)
@@ -468,6 +514,23 @@ public class RobotTwinClient {
 		AsyncOperation execution = new AsyncOperation(operation, poller);
 		poller.start();
 		return execution;
+	}
+
+	private AsyncOperation attachAsyncOperation(String operation, String sessionEndpoint) {
+		RESTfulAsyncRpcClient poller = RESTfulAsyncRpcClient.builder()
+											.setHttpClient(m_httpClient)
+											.setJsonMapper(m_mapper)
+											.setBaseUrl(m_baseUrl)
+											.setSessionEndpoint(sessionEndpoint)
+											.setPollInterval(m_pollInterval)
+											.build();
+		AsyncOperation execution = new AsyncOperation(operation, poller);
+		poller.start();
+		return execution;
+	}
+
+	private synchronized void invalidateOperationKinds() {
+		m_operationKinds = null;
 	}
 
 	private static void checkOperationTimeout(Duration timeout) {
@@ -495,19 +558,21 @@ public class RobotTwinClient {
 			checkOperationTimeout(timeout);
 			try {
 				Map<String,JsonNode> outputs = m_poller.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-				return new OperationResult(m_operation, OperationResult.COMPLETED, outputs, null, null);
+				invalidateIfFinishedAtStart();
+				return new OperationResult(m_operation, OperationResult.Status.COMPLETED, outputs, null, null);
 			}
 			catch ( TimeoutException e ) {
 				// **취소하지 않는다** — 기다리기를 그만둘 뿐 로봇은 계속 움직인다. 폴러는 데몬 스레드에서 연산이
 				// 끝날 때까지 돈다. 멈추려면 예외의 cancel() 이 세션에 DELETE 를 보낸다.
 				s_logger.warn("operation '{}' did not finish in {}; it keeps running remotely", m_operation, timeout);
-				throw new OperationTimeoutException(m_operation, timeout, this::cancel);
+				throw new OperationTimeoutException(m_operation, timeout, this::cancel, getSessionUrl());
 			}
 			catch ( CancellationException e ) {
-				return new OperationResult(m_operation, OperationResult.CANCELLED, Map.of(), null, null);
+				invalidateIfFinishedAtStart();
+				return new OperationResult(m_operation, OperationResult.Status.CANCELLED, Map.of(), null, null);
 			}
 			catch ( ExecutionException e ) {
-				return terminalFailure(m_operation, e);
+				return terminalFailure(m_operation, e, m_poller.getSessionUrl());
 			}
 			catch ( InterruptedException e ) {
 				Thread.currentThread().interrupt();
@@ -516,8 +581,33 @@ public class RobotTwinClient {
 		}
 
 		/**
-		 * 세션 확보 후 DELETE를 요청한다. 202 접수 후에도 최종 상태의 폴링은 계속한다.
-		 * 세션 확보 전·종료 후·409 거부는 false, 통신 오류는 예외다.
+		 * 카탈로그에는 async인데 트윈이 200으로 곧바로 끝냈으면(세션 없음) 종류가 바뀐 것이므로 카탈로그를 다시 읽게
+		 * 한다. 결과는 그 응답 그대로 쓴다.
+		 */
+		private void invalidateIfFinishedAtStart() {
+			if ( m_poller.getSessionUrl() == null ) {
+				s_logger.warn("operation '{}' finished at start; it is now synchronous on the twin", m_operation);
+				invalidateOperationKinds();
+			}
+		}
+
+		/**
+		 * 원격 연산 세션의 URL을 반환한다. 연산 시작 응답(세션)을 아직 받지 못했거나 시작이 실패했으면
+		 * {@code null}이다. 다른 프로세스에서 취소하거나 상태를 확인할 때 쓴다.
+		 *
+		 * @return	세션 URL.
+		 */
+		public @Nullable String getSessionUrl() {
+			return m_poller.getSessionUrl();
+		}
+
+		/**
+		 * 세션에 DELETE를 요청한다. 202 접수 후에도 최종 상태의 폴링은 계속한다.
+		 * <b>세션 확보 전</b>(시작 POST의 응답 전)에 부르면 취소를 기록하고 {@code true}를 반환하며, 세션을
+		 * 받는 즉시 DELETE가 나간다.
+		 * 종료 후·409 거부는 false다. 그 밖의 HTTP 오류는 {@link TwinException}으로 던진다:
+		 * 501 {@code CANCEL_UNSUPPORTED}(정지를 전달할 수 없음 — 팔이 계속 움직일 수 있다), 404(세션 없음) 등.
+		 * 응답이 없는 통신 오류는 {@code RESTfulIOException}이다.
 		 * true는 요청 접수이며 원격 정지 완료를 뜻하지 않는다.
 		 */
 		public synchronized boolean cancel() {
@@ -526,9 +616,6 @@ public class RobotTwinClient {
 			}
 			if ( m_cancelAccepted ) {
 				return true;
-			}
-			if ( !m_poller.isRunning() ) {
-				return false;
 			}
 			try {
 				m_cancelAccepted = m_poller.cancelWork();
@@ -543,35 +630,50 @@ public class RobotTwinClient {
 	/**
 	 * {@code utils.rpc.restful} 이 던진 실패를 가른다.
 	 * <ul>
-	 *   <li>HTTP 상태가 실린 {@link RESTfulException} — 접수 거부(4xx/5xx) → {@link TwinException}.</li>
+	 *   <li>HTTP 상태가 실린 {@link RESTfulException} — 세션이 없으면 접수 거부(4xx/5xx) → {@link TwinException}.
+	 *       세션을 받은 뒤(폴링 중)면 결과를 알 수 없음 → {@link SessionLostException}.</li>
 	 *   <li>상태가 없는 {@link RESTfulRemoteException} — 세션의 {@code FAILED} 응답에서 복원된 것 →
 	 *       {@code FAILED} 결과.</li>
 	 * </ul>
 	 */
-	private OperationResult terminalFailure(String operation, ExecutionException e) {
+	private OperationResult terminalFailure(String operation, ExecutionException e, @Nullable String sessionUrl) {
 		for ( Throwable cause = e; cause != null; cause = cause.getCause() ) {
 			if ( cause instanceof RESTfulException rex ) {
 				if ( rex.getHttpStatusCode() != RESTfulException.UNKNOWN_STATUS_CODE ) {
-					throw translate(rex);
+					RuntimeException translated = translate(rex);
+					if ( sessionUrl != null && translated instanceof TwinException twinError ) {
+						// 접수된 뒤(세션 확보 후)의 HTTP 오류: 로봇이 움직였을 수 있다.
+						throw new SessionLostException(operation, sessionUrl, twinError);
+					}
+					throw translated;
 				}
 				if ( rex instanceof RESTfulRemoteException rre && rre.getRemoteErrorEntity() != null ) {
 					RESTfulErrorEntity error = rre.getRemoteErrorEntity();
-					return new OperationResult(operation, OperationResult.FAILED, Map.of(),
+					return new OperationResult(operation, OperationResult.Status.FAILED, Map.of(),
 												error.getCode(), error.getMessage());
 				}
 				throw rex;	// 통신 실패
 			}
 			if ( cause instanceof CancellationException ) {
-				return new OperationResult(operation, OperationResult.CANCELLED, Map.of(), null, null);
+				return new OperationResult(operation, OperationResult.Status.CANCELLED, Map.of(), null, null);
 			}
 		}
 		throw new IllegalStateException("operation '" + operation + "' failed unexpectedly", e);
 	}
 
-	private boolean isAsync(String operation) {
+	/**
+	 * 연산이 비동기({@code kind=async}) 연산인지 반환한다. 연산 카탈로그를 읽어 캐시하며, 처음 보는 이름이면
+	 * 한 번 다시 읽는다. 호출 응답이 캐시한 종류와 다르면(동기로 보냈는데 202 세션, 비동기로 보냈는데 200 완료)
+	 * 그 응답대로 결과를 받고 캐시를 비운다. 카탈로그에 없는 연산은 {@code false}다(동기 경로로 보내 트윈이 404로 거부한다).
+	 *
+	 * @param operation	연산 이름.
+	 * @return	비동기 연산이면 {@code true}.
+	 */
+	public boolean isAsyncOperation(String operation) {
 		String kind = kindOf(operation, false);
 		if ( kind == null ) {
-			// 처음 보는 이름이면 카탈로그를 한 번 다시 읽는다 — 같은 주소에 다른 환경의 트윈이 떠 있을 수 있다.
+			// 처음 보는 이름이면 카탈로그를 한 번 다시 읽는다 — 같은 id의 트윈이 다른 구성으로 재기동됐을 수 있다.
+			// 이미 아는 이름의 종류가 바뀐 경우는 호출 응답(200/202)으로 알아채 캐시를 비운다.
 			kind = kindOf(operation, true);
 		}
 		// 카탈로그에 없는 연산은 동기 경로로 보낸다 — 트윈이 404 로 거부하고 TwinException 이 된다.
@@ -595,7 +697,9 @@ public class RobotTwinClient {
 		}
 		catch ( RESTfulIOException e ) {
 			throwIfHttpInterrupted("GET " + path, e);
-			throw e;
+			// 형식을 알 수 없는 HTTP 오류 본문(예: 경로가 없을 때 서버 프레임워크의 {"detail": ...})도 상태 코드가
+			// 있으면 TwinException으로 바꾼다. 상태 코드가 없으면(연결 실패 등) translate가 그대로 돌려준다.
+			throw translate(e);
 		}
 		catch ( RESTfulException e ) {
 			throw translate(e);
@@ -613,7 +717,39 @@ public class RobotTwinClient {
 			code = rre.getRemoteErrorEntity().getCode();
 			message = rre.getRemoteErrorEntity().getMessage();
 		}
-		return new TwinException(status, code, message, e);
+		JsonNode details = null;
+		String body = e.getResponseBody();
+		if ( body != null ) {
+			try {
+				JsonNode d = m_mapper.readTree(body).path("error").path("details");
+				details = d.isMissingNode() || d.isNull() ? null : d;
+			}
+			catch ( IOException ignored ) {
+				// 형식을 알 수 없는 본문이다. 상세 정보 없이 진행한다.
+			}
+		}
+		Duration retryAfter = parseRetryAfter(e.getResponseHeader("Retry-After"));
+		if ( status == 404 && code == null ) {
+			// 오류 코드가 없는 404는 서버 프레임워크의 경로 없음이다. 연산·변수·세션의 404는 코드가 있다.
+			// 트윈 id가 틀린 경우(환경마다 id가 다르다)가 대부분이므로 확인 방법을 안내한다.
+			message = message + " — the twin path does not exist; check the twin id '" + getTwinId()
+					+ "' (twins on this server: GET " + m_baseUrl + "/api/v1/robot_twins)";
+		}
+		return new TwinException(status, code, message, details, retryAfter, e);
+	}
+
+	// Retry-After는 초(정수·소수) 값만 다룬다. HTTP-date 형식은 트윈이 쓰지 않으므로 무시한다.
+	private static @Nullable Duration parseRetryAfter(@Nullable String value) {
+		if ( value == null ) {
+			return null;
+		}
+		try {
+			double sec = Double.parseDouble(value.trim());
+			return (Double.isFinite(sec) && sec >= 0) ? Duration.ofMillis(Math.round(sec * 1000)) : null;
+		}
+		catch ( NumberFormatException ignored ) {
+			return null;
+		}
 	}
 
 	private Map<String,JsonNode> toJsonInputs(@Nullable Map<String,?> inputs) {
@@ -653,6 +789,7 @@ public class RobotTwinClient {
 		private Duration m_pollInterval = Duration.ofMillis(500);
 		private Duration m_operationTimeout = Duration.ofSeconds(120);
 		private JsonMapper m_mapper;
+		private OkHttpClient m_httpClient;
 
 		public RobotTwinClient build() {
 			return new RobotTwinClient(this);
@@ -697,6 +834,9 @@ public class RobotTwinClient {
 		/** 트윈 id. (기본 {@value RobotTwinClient#DEFAULT_TWIN_ID}) */
 		public Builder twinId(String twinId) {
 			Preconditions.checkNotNullArgument(twinId, "twinId is null");
+			// id는 URL 경로에 그대로 들어간다. 트윈 id 규칙과 같은 문자만 받는다.
+			Preconditions.checkArgument(twinId.matches("[A-Za-z0-9_-]+"),
+										"twinId must consist of letters, digits, '_' or '-': '%s'", twinId);
 			m_twinId = twinId;
 			return this;
 		}
@@ -708,6 +848,7 @@ public class RobotTwinClient {
 		 */
 		public Builder httpTimeout(Duration timeout) {
 			Preconditions.checkNotNullArgument(timeout, "httpTimeout is null");
+			checkPositive(timeout, "httpTimeout");
 			m_httpTimeout = timeout;
 			return this;
 		}
@@ -715,6 +856,7 @@ public class RobotTwinClient {
 		/** 비동기 연산 세션의 폴링 주기. (기본 0.5초) */
 		public Builder pollInterval(Duration interval) {
 			Preconditions.checkNotNullArgument(interval, "pollInterval is null");
+			checkPositive(interval, "pollInterval");
 			m_pollInterval = interval;
 			return this;
 		}
@@ -722,6 +864,7 @@ public class RobotTwinClient {
 		/** 비동기 연산을 기다리는 기본 상한. (기본 120초) 넘겨도 원격 연산은 취소하지 않는다. */
 		public Builder operationTimeout(Duration timeout) {
 			Preconditions.checkNotNullArgument(timeout, "operationTimeout is null");
+			checkPositive(timeout, "operationTimeout");
 			m_operationTimeout = timeout;
 			return this;
 		}
@@ -730,6 +873,24 @@ public class RobotTwinClient {
 		public Builder jsonMapper(JsonMapper mapper) {
 			m_mapper = mapper;
 			return this;
+		}
+
+		/**
+		 * HTTP 클라이언트를 주입한다. 여러 트윈 클라이언트가 연결 풀·디스패처를 함께 쓰게 할 때 쓴다.
+		 * 제한 시간은 이 빌더의 {@code httpTimeout}으로 덮어쓴다(주입한 객체 자체는 바꾸지 않는다).
+		 * 주지 않으면 클라이언트마다 새로 만든다.
+		 *
+		 * @param client	HTTP 클라이언트.
+		 * @return	이 빌더.
+		 */
+		public Builder httpClient(OkHttpClient client) {
+			Preconditions.checkNotNullArgument(client, "httpClient is null");
+			m_httpClient = client;
+			return this;
+		}
+
+		private static void checkPositive(Duration value, String name) {
+			Preconditions.checkArgument(!value.isNegative() && !value.isZero(), "%s must be positive: %s", name, value);
 		}
 	}
 }

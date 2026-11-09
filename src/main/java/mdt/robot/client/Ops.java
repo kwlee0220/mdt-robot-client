@@ -4,8 +4,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 
+import mdt.robot.client.operation.ClosedLoopCheck;
 import mdt.robot.client.operation.MoveToNamedTarget;
 
+import utils.RuntimeExecutionException;
 import utils.RuntimeInterruptedException;
 import utils.async.AbstractThreadedExecution;
 
@@ -38,20 +40,21 @@ public final class Ops {
 	}
 
 	/**
-	 * 실패로 끝난 연산 결과에서 다음에 할 일을 찾는다.
+	 * 실패로 끝난 연산 결과에서 다음에 할 일을 찾는다. 실패 이유가 아니라 안내다.
 	 *
 	 * @param result	연산 결과.
 	 * @return	안내 문장. 모르는 코드거나 실패가 아니면 {@link Optional#empty()}.
 	 */
-	public static Optional<String> failureWhy(OperationResult result) {
+	public static Optional<String> failureHint(OperationResult result) {
 		return Optional.ofNullable(result.errorCode()).map(FAILURE_HINTS::get);
 	}
 
 	/**
-	 * {@link MoveToNamedTarget#DEFAULT_VELOCITY_SCALING}으로 실행한다.
-	 * 런타임 예외는 그대로 전달하고, 인터럽트는 플래그를 복원한 RuntimeInterruptedException으로 전달한다.
+	 * {@link mdt.robot.client.operation.MotionLimits#DEFAULT_VELOCITY_SCALING}으로 실행한다.
+	 * 런타임 예외와 Error는 그대로, 검사 예외는 RuntimeExecutionException으로 전달하고, 인터럽트는 플래그를 복원한
+	 * RuntimeInterruptedException으로 전달한다.
 	 */
-	public static MoveToNamedTarget.Check moveToNamedTargetVerified(RobotTwinClient twin, String target) {
+	public static ClosedLoopCheck moveToNamedTargetVerified(RobotTwinClient twin, String target) {
 		return runOperation(new MoveToNamedTarget(twin, target));
 	}
 
@@ -59,8 +62,11 @@ public final class Ops {
 	// 내부
 	// ------------------------------------------------------------------
 
-	/** 연산 객체의 checked exception을 기존 Ops 호출 계약으로 바꾼다. */
-	private static <T> T runOperation(AbstractThreadedExecution<T> operation) {
+	/**
+	 * 연산 객체의 checked exception을 런타임 예외로 바꾼다. 원인이 RuntimeException이면 그대로, Error이면 다시 던지고
+	 * (utils 규칙: Exception은 잡고 Error는 전파), 검사 예외는 RuntimeExecutionException으로 감싼다.
+	 */
+	static <T> T runOperation(AbstractThreadedExecution<T> operation) {
 		try {
 			return operation.run();
 		}
@@ -73,7 +79,10 @@ public final class Ops {
 			if ( cause instanceof RuntimeException runtime ) {
 				throw runtime;
 			}
-			throw new IllegalStateException("robot twin operation failed", cause);
+			if ( cause instanceof Error error ) {
+				throw error;
+			}
+			throw new RuntimeExecutionException(cause);
 		}
 	}
 

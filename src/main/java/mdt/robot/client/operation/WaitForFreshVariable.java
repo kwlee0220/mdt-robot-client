@@ -23,7 +23,7 @@ import utils.Preconditions;
  * FRESH는 캐시 갱신의 근거이며 특정 명령의 반영·물리적 정착을 보장하지 않는다.
  * 시각 누락이나 상한 초과는 실패 사유를 담은 Result로 정상 완료한다. 통신 오류는 FAILED다.
  * 실행 전 취소는 요청을 보내지 않는다. 실행 중 cancel(true)는 관측 스레드를 인터럽트하고,
- * cancel(false)와 시작 중 취소는 false다. 외부 인터럽트도 CANCELLED로 처리한다.
+ * 시작 중(STARTING) cancel(true)는 기록되어 관측 전에 끝나고, 실행 중 cancel(false)는 false다. 외부 인터럽트도 CANCELLED로 처리한다.
  * run()은 플래그를 해제한 InterruptedException, start()/get()은 CancellationException으로 전달한다.
  * 관측 상한과 취소는 진행 중인 블로킹 HTTP를 즉시 끊지 않는다. POST·DELETE는 보내지 않는다.
  */
@@ -56,8 +56,9 @@ public final class WaitForFreshVariable extends AbstractObservationOperation<Wai
 	}
 
 	/** sample은 FRESH 판정에 사용한 응답 전체다. value·quality·시각을 보존한다. 읽기 전용으로 사용한다. */
-	public record Result(Outcome outcome, Optional<JsonNode> sample, Diagnostics diagnostics) {
-		public boolean fresh() { return outcome == Outcome.FRESH; }
+	public record Result(Outcome outcome, Optional<JsonNode> sample, Diagnostics diagnostics) implements StepVerdict {
+		@Override public boolean goalReached() { return outcome == Outcome.FRESH; }
+		@Override public @Nullable String failureReason() { return goalReached() ? null : "새 표본 확인 불가: " + summary(); }
 		public String summary() {
 			return outcome + ": 갱신 " + diagnostics.updates() + "회, 유효 표본 " + diagnostics.validSamples()
 					+ "건, 중복 " + diagnostics.duplicates() + "건, 거부 " + diagnostics.rejections();
@@ -128,7 +129,8 @@ public final class WaitForFreshVariable extends AbstractObservationOperation<Wai
 			long delay = Math.min(nanos(m_options.poll()), Math.max(0, remaining));
 			if ( delay > 0 ) { Thread.sleep(delay / 1_000_000, (int)(delay % 1_000_000)); }
 		}
-		Outcome outcome = stats.valid > 0 ? Outcome.TIMEOUT
+		// 한 번도 읽지 못한 채 시간이 다 됐으면(timeout 0 포함) 표본이 나빴던 것이 아니라 시간이 부족했던 것이다.
+		Outcome outcome = (stats.valid > 0 || stats.reads == 0) ? Outcome.TIMEOUT
 				: stats.rejections.containsKey(Rejection.TIMESTAMP_MISSING) || stats.rejections.containsKey(Rejection.TIMESTAMP_INVALID)
 				? Outcome.NO_VALID_TIMESTAMP : Outcome.NO_VALID_SAMPLE;
 		return new Result(outcome, Optional.empty(),

@@ -75,13 +75,13 @@ class GraspTest {
 		Grasp.Check check;
 		if ( async ) { grasp.start(); check = grasp.get(3, TimeUnit.SECONDS); }
 		else { check = grasp.run(); }
-		assertTrue(check.goalsReached());
+		assertTrue(check.goalReached());
 		assertTrue(check.graspAttempted());
 		assertTrue(grasp.getProgress().graspAttempted());
 		assertFalse(initial.graspAttempted(), "earlier snapshot is unchanged");
 		assertTrue(grasp.isCompleted());
 		assertNull(check.failedStage());
-		assertNull(check.why());
+		assertNull(check.failureReason());
 		assertEquals(List.of(Grasp.Stage.values()), check.steps().stream().map(StepResult::stage).toList());
 		assertTrue(check.steps().stream().allMatch(StepResult::goalReached));
 		assertEquals("custom_open", bodies.get(0).path("target").asText());
@@ -91,8 +91,9 @@ class GraspTest {
 		assertEquals(0.1, bodies.get(2).path("velocity_scaling").asDouble());
 		assertFalse(bodies.get(2).has("frame"));
 		assertEquals("custom_grasp", bodies.get(3).path("target").asText());
-		assertTrue(check.steps().get(3).gripper().atGoal());
-		assertFalse(check.steps().get(3).gripper().stalled(), "stalled does not override at_goal");
+		GripperCheck gripper = check.steps().get(3).verdictAs(GripperCheck.class).orElseThrow();
+		assertTrue(gripper.goalReached());
+		assertFalse(gripper.stalled(), "stalled does not override at_goal");
 		assertTrue(check.steps().stream().allMatch(s -> s.remoteResult().orElseThrow().isCompleted()));
 		assertEquals(check.steps(), grasp.getProgress().steps());
 		assertTrue(grasp.getProgress().activeStage().isEmpty());
@@ -107,9 +108,9 @@ class GraspTest {
 		installFailure(failed, "goal");
 		Grasp grasp = new Grasp(server.client(), ABOVE, TARGET, FAST);
 		Grasp.Check check = grasp.run();
-		assertFalse(check.goalsReached());
+		assertFalse(check.goalReached());
 		assertEquals(Grasp.Stage.values()[failed - 1], check.failedStage());
-		assertNotNull(check.why());
+		assertNotNull(check.failureReason());
 		assertEquals(failed, check.steps().size());
 		assertEquals(failed == 4, check.graspAttempted());
 		assertEquals(check.graspAttempted(), grasp.getProgress().graspAttempted());
@@ -123,8 +124,8 @@ class GraspTest {
 		installFailure(failed, status);
 		Grasp grasp = new Grasp(server.client(), ABOVE, TARGET, FAST);
 		Grasp.Check check = grasp.run();
-		assertFalse(check.goalsReached());
-		assertEquals(status, check.steps().get(failed - 1).remoteResult().orElseThrow().status());
+		assertFalse(check.goalReached());
+		assertEquals(status, check.steps().get(failed - 1).remoteResult().orElseThrow().status().name());
 		assertEquals(failed == 4, check.graspAttempted());
 		assertEquals(check.graspAttempted(), grasp.getProgress().graspAttempted());
 		assertEquals(failed, calls.get());
@@ -155,8 +156,8 @@ class GraspTest {
 		Grasp.Options options = new Grasp.Options(FAST.approach().withSettleTimeout(Duration.ofMillis(80)), FAST.descent(), "open", "grasp");
 		Grasp.Check check = new Grasp(server.client(), ABOVE, TARGET, options).run();
 		assertEquals(Grasp.Stage.APPROACH, check.failedStage());
-		assertEquals(MoveCheck.SETTLE_TIMEOUT, check.steps().get(1).movement().reason());
-		assertTrue(check.why().contains("NO_VALID_SAMPLE"));
+		assertEquals(MoveCheck.SETTLE_TIMEOUT, check.steps().get(1).verdictAs(MoveCheck.class).orElseThrow().failureCode());
+		assertTrue(check.failureReason().contains("NO_VALID_SAMPLE"));
 		assertEquals(2, calls.get());
 	}
 
@@ -219,14 +220,21 @@ class GraspTest {
 		finally { done.set(true); }
 	}
 
-	@Test void cancelBeforeAsyncSessionExistsStopsAfterCurrentStage() throws Exception {
+	@Test void cancelBeforeAsyncSessionExistsIsDeliveredOnceTheSessionExists() throws Exception {
+		// 이동 단계의 시작 POST 응답을 기다리는 동안의 취소: 하위 연산이 접수하고 세션을 받는 즉시 DELETE를 보낸다.
 		server.operation("move_linear", "async");
 		CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+		AtomicBoolean deleted = new AtomicBoolean();
 		server.on("POST", MOVE, req -> {
 			entered.countDown(); await(release);
 			return FakeTwinServer.json(202, Map.of("status", "RUNNING", "session_endpoint", FakeTwinServer.BASE + SESSION));
 		});
-		server.on("GET", SESSION, req -> completed(Map.of("final_pose", ABOVE)));
+		server.on("DELETE", SESSION, req -> {
+			deleted.set(true);
+			return FakeTwinServer.json(200, Map.of("status", "CANCELLED"));
+		});
+		server.on("GET", SESSION, req -> deleted.get() ? FakeTwinServer.json(200, Map.of("status", "CANCELLED"))
+														: FakeTwinServer.json(200, Map.of("status", "RUNNING")));
 		Grasp grasp = new Grasp(server.client(), ABOVE, TARGET, FAST);
 		grasp.start();
 		try {
@@ -235,7 +243,8 @@ class GraspTest {
 			release.countDown();
 			assertThrows(CancellationException.class, () -> grasp.get(3, TimeUnit.SECONDS));
 			assertEquals(2, server.requests("POST").size());
-			assertTrue(server.requests("DELETE").isEmpty());
+			assertEquals(1, server.requests("DELETE").size());
+			assertEquals(ChildCancellationState.ACCEPTED, grasp.getProgress().childCancellationState());
 		}
 		finally { release.countDown(); }
 	}
@@ -339,10 +348,9 @@ class GraspTest {
 		grasp.start();
 		assertThrows(IllegalStateException.class, grasp::start);
 		assertThrows(IllegalStateException.class, grasp::run);
-		assertFalse(grasp.cancel(true));
 		assertEquals(1, queued.size());
 		queued.get(0).run();
-		assertTrue(grasp.get().goalsReached());
+		assertTrue(grasp.get().goalReached());
 		assertEquals(4, calls.get());
 	}
 
@@ -444,7 +452,7 @@ class GraspTest {
 		assertThrows(IllegalArgumentException.class, () -> new Grasp(server.client(), ABOVE,
 				TARGET.withPosition(new Position(Double.NaN, 0, 0)), FAST));
 		assertThrows(IllegalArgumentException.class, () -> new Grasp.Options(FAST.approach(), FAST.descent(), "open", " grasp"));
-		assertThrows(IllegalArgumentException.class, () -> new Grasp.Options(FAST.approach(), FAST.descent().withTolerance(Double.NaN), "open", "grasp"));
+		assertThrows(IllegalArgumentException.class, () -> new Grasp.Options(FAST.approach(), FAST.descent().withPositionToleranceM(Double.NaN), "open", "grasp"));
 		assertThrows(IllegalArgumentException.class, () -> new Grasp(server.client(), ABOVE, TARGET, FAST, Duration.ZERO));
 		assertThrows(IllegalArgumentException.class, () -> new Grasp.Options(FAST.approach(),
 				FAST.descent().withSettleTimeout(Duration.ofSeconds(Long.MAX_VALUE)), "open", "grasp"));

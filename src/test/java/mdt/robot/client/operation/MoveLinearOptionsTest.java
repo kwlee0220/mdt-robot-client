@@ -35,20 +35,20 @@ class MoveLinearOptionsTest {
 						"closed_loop", true, "final_pose", TARGET.withPosition(new Position(0.408, 0, 0.1)))));
 			});
 			Double velocity = serverVelocity ? null : 0.3;
-			MoveLinear.Options options = MoveLinear.Options.DEFAULT.withTolerance(0.01)
+			MoveLinear.Options options = MoveLinear.Options.DEFAULT.withPositionToleranceM(0.01)
 					.withVelocityScaling(velocity).withSettleTimeout(Duration.ofSeconds(1));
 			MoveLinear fromOptions = new MoveLinear(server.client(), TARGET, options);
-			MoveLinear.Builder builder = MoveLinear.builder(server.client(), TARGET).tolerance(0.01)
+			MoveLinear.Builder builder = MoveLinear.builder(server.client(), TARGET).positionToleranceM(0.01)
 					.velocityScaling(velocity).settleTimeout(Duration.ofSeconds(1));
 			MoveLinear fromBuilder = builder.build();
-			builder.tolerance(0).velocityScaling(0.9);
+			builder.positionToleranceM(0).velocityScaling(0.9);
 			assertTrue(server.requests.isEmpty());
-			assertTrue(fromOptions.run().reached());
-			assertTrue(fromBuilder.run().reached());
+			assertTrue(fromOptions.run().goalReached());
+			assertTrue(fromBuilder.run().goalReached());
 			assertEquals(requests.get(0), requests.get(1));
 			assertEquals(!serverVelocity, requests.get(0).has("velocity_scaling"));
-			assertFalse(new MoveLinear(server.client(), TARGET).run().reached()); // 기본 허용 오차 5mm
-			assertFalse(MoveLinear.builder(server.client(), TARGET).build().run().reached());
+			assertFalse(new MoveLinear(server.client(), TARGET).run().goalReached()); // 기본 허용 오차 5mm
+			assertFalse(MoveLinear.builder(server.client(), TARGET).build().run().goalReached());
 			assertEquals(requests.get(2), requests.get(3));
 			assertEquals(0.2, requests.get(2).path("velocity_scaling").asDouble());
 			assertTrue(server.requests("GET /variables/ee_pose").isEmpty());
@@ -60,8 +60,8 @@ class MoveLinearOptionsTest {
 		try (FakeTwinServer server = new FakeTwinServer()) {
 			for (double value : new double[] { -1, Double.NaN, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY }) {
 				assertThrows(IllegalArgumentException.class, () -> new MoveLinear.Options(value, 0.2, Duration.ZERO));
-				assertThrows(IllegalArgumentException.class, () -> MoveLinear.Options.DEFAULT.withTolerance(value));
-				assertThrows(IllegalArgumentException.class, () -> MoveLinear.builder(server.client(), TARGET).tolerance(value));
+				assertThrows(IllegalArgumentException.class, () -> MoveLinear.Options.DEFAULT.withPositionToleranceM(value));
+				assertThrows(IllegalArgumentException.class, () -> MoveLinear.builder(server.client(), TARGET).positionToleranceM(value));
 			}
 			assertTrue(server.requests.isEmpty());
 		}

@@ -28,15 +28,15 @@ public final class ResetSceneExample {
 				WaitForFreshVariable.Options.DEFAULT);
 		operation.start(); // 호출 스레드에서 실행하려면 대신 run()을 사용한다.
 		ResetScene.Check check = operation.get();
-		if ( !check.applied() ) {
-			System.out.println("장면 재배치 확인 실패: " + check.why());
+		if ( !check.goalReached() ) {
+			System.out.println("장면 재배치 확인 실패: " + check.failureReason());
 			return;
 		}
 		System.out.println("적용 물체 수: " + check.result().output("applied_count"));
 		System.out.println("적용 요청 배치: " + check.result().output("objects"));
 		WaitForFreshVariable.Result observed = check.observation().orElseThrow();
 		System.out.println("관측 갱신: " + observed.summary());
-		if ( observed.fresh() ) {
+		if ( observed.goalReached() ) {
 			System.out.println("갱신 확인에 사용한 관측값: " + observed.sample().orElseThrow().get("value"));
 		}
 		// 갱신 미확인은 리셋 미적용이 아니다. 자동 재시도하지 않는다. 새 발행도 물리적 정착의 증명은 아니다.

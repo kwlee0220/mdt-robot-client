@@ -42,7 +42,8 @@ public record Pose(@JsonProperty("position") Position position,
 		if ( !pose.has("position") || !pose.has("orientation") ) {
 			throw new IllegalArgumentException("not a pose (no 'position'/'orientation'): " + node);
 		}
-		return MAPPER.convertValue(pose, Pose.class);
+		// 성분이 빠지거나 숫자가 아니면 거부하고, 쿼터니언은 단위 길이인지 확인한다.
+		return new Pose(Geometry.readPosition(pose.get("position")), Geometry.readUnitQuaternion(pose.get("orientation")));
 	}
 
 	/**

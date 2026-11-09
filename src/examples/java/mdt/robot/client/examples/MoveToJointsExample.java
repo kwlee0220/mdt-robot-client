@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import mdt.robot.client.OperationResult;
 import mdt.robot.client.RobotTwinClient;
+import mdt.robot.client.operation.ClosedLoopCheck;
 import mdt.robot.client.operation.MoveToJoints;
 
 /**
@@ -42,7 +43,7 @@ public final class MoveToJointsExample {
 		System.out.printf("%s 현재 %+.4f rad%n", JOINT, start);
 
 		for ( double target : new double[] { start + delta, start } ) {
-			MoveToJoints.Check check = new MoveToJoints(twin, Map.of(JOINT, target)).run();
+			ClosedLoopCheck check = new MoveToJoints(twin, Map.of(JOINT, target)).run();
 			OperationResult result = check.result();
 			// 종료 시점 관절값이 출력에 실린다(있으면). 개루프 스택에서는 정착 전 값일 수 있다.
 			JsonNode finalJoints = result.output("final_joints");
@@ -50,8 +51,8 @@ public final class MoveToJointsExample {
 													: Double.NaN;
 			System.out.printf("  목표 %+.4f → 종료 %+.4f rad (closed_loop=%s)%n", target, reached,
 								result.output("closed_loop"));
-			if ( !check.reached() ) {
-				System.out.printf("도달 확인 불가: %s — %s. 다음 이동을 진행하지 않는다.%n", result.status(), check.why());
+			if ( !check.goalReached() ) {
+				System.out.printf("도달 확인 불가: %s — %s. 다음 이동을 진행하지 않는다.%n", result.status(), check.failureReason());
 				return;
 			}
 		}

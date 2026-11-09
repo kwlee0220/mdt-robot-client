@@ -70,19 +70,19 @@ class MoveToNamedTargetTest {
 			body.set(req.getBody().readUtf8());
 			return completed();
 		});
-		MoveToNamedTarget.Options options = MoveToNamedTarget.Options.DEFAULT.withVelocityScaling(null)
+		MotionLimits options = MotionLimits.DEFAULT.withVelocityScaling(null)
 				.withMaxDuration(Duration.ofMillis(1250)).withTimeout(Duration.ofSeconds(90));
-		assertTrue(new MoveToNamedTarget(m_server.client(), "ready", options).run().reached());
+		assertTrue(new MoveToNamedTarget(m_server.client(), "ready", options).run().goalReached());
 		JsonNode inputs = JsonMapper.builder().build().readTree(body.get()).path("inputs");
 		assertEquals("ready", inputs.path("target").asText());
 		assertFalse(inputs.has("velocity_scaling"));
 		assertEquals(1.25, inputs.path("max_duration_sec").doubleValue());
-		assertEquals(0.3, MoveToNamedTarget.Options.DEFAULT.velocityScaling().doubleValue());
+		assertEquals(0.3, MotionLimits.DEFAULT.velocityScaling().doubleValue());
 	}
 
 	@Test
 	void optionsKeepDefaultLimitOrUseServerMarginUnlessTimeoutIsExplicit() {
-		MoveToNamedTarget.Options options = MoveToNamedTarget.Options.DEFAULT;
+		MotionLimits options = MotionLimits.DEFAULT;
 		Duration clientDefault = Duration.ofSeconds(120);
 		assertEquals(clientDefault, options.resolveTimeout(clientDefault));
 		assertEquals(clientDefault, options.withMaxDuration(Duration.ofSeconds(60)).resolveTimeout(clientDefault));
@@ -96,13 +96,13 @@ class MoveToNamedTargetTest {
 	@Test
 	void invalidOptionsAreRejectedBeforeCommunication() {
 		for (double speed : new double[]{0, -1, 1.01, Double.NaN, Double.POSITIVE_INFINITY}) {
-			assertThrows(IllegalArgumentException.class, () -> MoveToNamedTarget.Options.DEFAULT.withVelocityScaling(speed));
+			assertThrows(IllegalArgumentException.class, () -> MotionLimits.DEFAULT.withVelocityScaling(speed));
 		}
 		for (Duration duration : new Duration[]{Duration.ZERO, Duration.ofSeconds(-1)}) {
-			assertThrows(IllegalArgumentException.class, () -> MoveToNamedTarget.Options.DEFAULT.withMaxDuration(duration));
-			assertThrows(IllegalArgumentException.class, () -> MoveToNamedTarget.Options.DEFAULT.withTimeout(duration));
+			assertThrows(IllegalArgumentException.class, () -> MotionLimits.DEFAULT.withMaxDuration(duration));
+			assertThrows(IllegalArgumentException.class, () -> MotionLimits.DEFAULT.withTimeout(duration));
 		}
-		assertThrows(IllegalArgumentException.class, () -> new MoveToNamedTarget(m_server.client(), "ready", (MoveToNamedTarget.Options)null));
+		assertThrows(IllegalArgumentException.class, () -> new MoveToNamedTarget(m_server.client(), "ready", (MotionLimits)null));
 		assertThrows(IllegalArgumentException.class, () -> new MoveToNamedTarget(m_server.client(), "ready", 0.3, null));
 		assertTrue(m_server.requests.isEmpty());
 	}
@@ -120,24 +120,24 @@ class MoveToNamedTargetTest {
 		MoveToNamedTarget move = new MoveToNamedTarget(m_server.client(), "ready");
 		assertTrue(m_server.requests.isEmpty());
 		assertTrue(move.getRemoteResult().isEmpty());
-		MoveToNamedTarget.Check check = move.run();
+		ClosedLoopCheck check = move.run();
 		assertSame(check.result(), move.getRemoteResult().orElseThrow());
-		assertEquals("true".equals(closedLoop), check.reached());
+		assertEquals("true".equals(closedLoop), check.goalReached());
 		assertEquals("move_to_named_target", check.result().operation());
 		assertTrue(move.isCompleted());
-		if ( check.reached() ) { assertNull(check.why()); }
-		else if ( closedLoop.equals("false") ) { assertTrue(check.why().contains("open loop")); }
+		if ( check.goalReached() ) { assertNull(check.failureReason()); }
+		else if ( closedLoop.equals("false") ) { assertTrue(check.failureReason().contains("open loop")); }
 		else if ( closedLoop.equals("missing") || closedLoop.equals("null") ) {
-			assertTrue(check.why().contains("정보 없음"));
-			assertFalse(check.why().contains("open loop"));
+			assertTrue(check.failureReason().contains("정보 없음"));
+			assertFalse(check.failureReason().contains("open loop"));
 		}
 		else {
-			assertTrue(check.why().contains("형식 오류"));
-			assertTrue(check.why().contains("받은 값: " + closedLoop));
+			assertTrue(check.failureReason().contains("형식 오류"));
+			assertTrue(check.failureReason().contains("받은 값: " + closedLoop));
 		}
 		JsonNode inputs = JsonMapper.builder().build().readTree(body.get()).get("inputs");
 		assertEquals("ready", inputs.get("target").asText());
-		assertEquals(MoveToNamedTarget.DEFAULT_VELOCITY_SCALING, inputs.get("velocity_scaling").asDouble());
+		assertEquals(MotionLimits.DEFAULT_VELOCITY_SCALING, inputs.get("velocity_scaling").asDouble());
 		assertTrue(m_server.requests("GET /variables").isEmpty());
 		assertEquals(check, Ops.moveToNamedTargetVerified(m_server.client(), "ready"));
 		JsonNode legacyInputs = JsonMapper.builder().build().readTree(body.get()).get("inputs");
@@ -154,15 +154,14 @@ class MoveToNamedTargetTest {
 		MoveToNamedTarget move = new MoveToNamedTarget(m_server.client(), "home", 0.15, Duration.ofSeconds(5));
 		List<Runnable> queued = new ArrayList<>();
 		move.setExecutor(queued::add);
-		RobotTwinOperation<MoveToNamedTarget.Check> operation = move;
+		RobotTwinOperation<ClosedLoopCheck> operation = move;
 		operation.start();
 		assertThrows(IllegalStateException.class, operation::start);
 		assertThrows(IllegalStateException.class, move::run);
-		assertFalse(operation.cancel(true));
 		assertEquals(1, queued.size());
 		assertTrue(m_server.requests.isEmpty());
 		queued.get(0).run();
-		assertTrue(operation.get().reached());
+		assertTrue(operation.get().goalReached());
 		assertThrows(IllegalStateException.class, move::run);
 		assertEquals(1, m_server.requests("POST " + MOVE).size());
 		JsonNode inputs = JsonMapper.builder().build().readTree(body.get()).get("inputs");
@@ -176,14 +175,14 @@ class MoveToNamedTargetTest {
 		m_server.on("POST", MOVE, req -> FakeTwinServer.json(200, Map.of("status", status,
 				"error", Map.of("code", "PLANNING_FAILED", "message", "no plan"))));
 		MoveToNamedTarget move = new MoveToNamedTarget(m_server.client(), "ready");
-		MoveToNamedTarget.Check check = move.run();
-		assertFalse(check.reached());
-		assertEquals(status, check.result().status());
+		ClosedLoopCheck check = move.run();
+		assertFalse(check.goalReached());
+		assertEquals(status, check.result().status().name());
 		if ( status.equals("FAILED") ) {
-			assertEquals(Ops.FAILURE_HINTS.get("PLANNING_FAILED"), check.why());
+			assertEquals(Ops.FAILURE_HINTS.get("PLANNING_FAILED"), check.failureReason());
 		}
 		else {
-			assertEquals("원격 연산 상태: CANCELLED", check.why());
+			assertEquals("원격 연산 상태: CANCELLED", check.failureReason());
 		}
 		assertTrue(move.isCompleted());
 		assertEquals(check, Ops.moveToNamedTargetVerified(m_server.client(), "ready"));
@@ -242,7 +241,7 @@ class MoveToNamedTargetTest {
 			assertThrows(CancellationException.class, () -> move.get(3, TimeUnit.SECONDS));
 			assertTrue(move.isCancelled());
 			OperationResult remote = move.getRemoteResult().orElseThrow();
-			assertEquals(terminalStatus, remote.status());
+			assertEquals(terminalStatus, remote.status().name());
 			if ( terminalStatus.equals("COMPLETED") ) { assertTrue(remote.output("closed_loop").booleanValue()); }
 			if ( terminalStatus.equals("FAILED") ) { assertEquals("EXECUTION_ABORTED", remote.errorCode()); }
 		}
@@ -261,7 +260,7 @@ class MoveToNamedTargetTest {
 			assertFalse(move.cancel(true));
 			assertTrue(move.isRunning());
 			m_remoteStatus.set("COMPLETED");
-			assertTrue(move.get(3, TimeUnit.SECONDS).reached());
+			assertTrue(move.get(3, TimeUnit.SECONDS).goalReached());
 		}
 		finally { finishWorker(worker); }
 	}
@@ -278,7 +277,7 @@ class MoveToNamedTargetTest {
 		OperationTimeoutException cause = assertInstanceOf(OperationTimeoutException.class,
 				assertThrows(ExecutionException.class, move::run).getCause());
 		assertEquals(timeout, cause.getTimeout());
-		assertEquals("move_to_named_target", cause.getOperation());
+		assertEquals("move_to_named_target", cause.getOperationName());
 		assertTrue(move.isFailed());
 		assertTrue(m_server.requests("DELETE").isEmpty());
 		assertTrue(move.getRemoteResult().isEmpty());
@@ -360,7 +359,7 @@ class MoveToNamedTargetTest {
 			body.set(req.getBody().readUtf8());
 			return completed();
 		});
-		assertTrue(new MoveToNamedTarget(m_server.client(), "ready", velocity).run().reached());
+		assertTrue(new MoveToNamedTarget(m_server.client(), "ready", velocity).run().goalReached());
 		assertEquals(velocity, JsonMapper.builder().build().readTree(body.get())
 				.path("inputs").path("velocity_scaling").asDouble());
 	}

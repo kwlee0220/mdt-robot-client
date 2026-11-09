@@ -7,9 +7,10 @@ import org.jetbrains.annotations.Nullable;
 /**
  * 연결된 트윈이 작업이 요구하는 환경(백엔드)이 아니다.
  * <p>
- * 제공 트윈은 환경(mock · Isaac · 펑션베이)과 무관하게 같은 id · 포트({@code panda01} · 8801)라
- * <b>연결만으로는 환경이 갈리지 않는다.</b> 확인하지 않으면 Isaac 물리가 필요한 작업이 mock 트윈에 붙어
- * 오류 없이 엉뚱하게 돈다. {@link RobotTwinClient#requireBackend} 가 던진다.
+ * 트윈 id는 환경마다 다르지만(Isaac {@code panda01}, 펑션베이 {@code rdfp01}) 포트는 같고, 어느 id가 어느
+ * 백엔드로 뜨는지는 서버 설정이 정한다. 그래서 <b>접속 주소만으로는 환경을 단정할 수 없다.</b> 확인하지 않으면
+ * Isaac 물리가 필요한 작업이 다른 백엔드의 트윈에 붙어 오류 없이 엉뚱하게 돈다.
+ * {@link RobotTwinClient#requireBackend} 가 던진다.
  *
  * @author Kang-Woo Lee (ETRI)
  */
@@ -22,10 +23,10 @@ public class WrongBackendException extends RuntimeException {
 
 	public WrongBackendException(String purpose, List<String> expected, @Nullable String actual) {
 		super(String.format("%s requires a twin of %s, but the connected twin is %s; "
-							+ "start it with ./scripts/run_robot_twin.sh --backend %s",
+							+ "start a twin of that backend with ./scripts/run_robot_twin.sh --twin <id> and connect "
+							+ "to its id (an unknown id lists the available twins)",
 							purpose, String.join(" | ", expected),
-							actual != null ? actual : "unknown (the twin reports no backend — update rdfp_ws)",
-							expected.get(0)));
+							actual != null ? actual : "unknown (the twin reports no backend — update rdfp_ws)"));
 		m_purpose = purpose;
 		m_expected = List.copyOf(expected);
 		m_actual = actual;

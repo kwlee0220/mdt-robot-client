@@ -29,6 +29,11 @@ import utils.Preconditions;
  * 비교에 사용하지 않는다. 서버의 quality/staleness 판정을 신뢰하며, 같은 배치 요청이나 가까운
  * 수신 시각이 센서의 동시 측정·물체 정착·파지 성공을 증명하지는 않는다.
  * <p>
+ * <b>Isaac의 한계:</b> Isaac scene 노드는 주기마다 TF 버퍼의 최신 변환을 읽어 현재 시각으로 다시 발행하며
+ * 변환 자체의 시각은 보지 않는다. tf2는 새 변환이 들어올 때만 오래된 값을 지우므로, Isaac 쪽 TF가 멈추면
+ * 마지막 값이 새 received_at과 quality=OK로 계속 온다.
+ * 그러면 수신 시각 차이 검사를 통과해도 물체 위치는 멈춘 시점의 값이다.
+ * <p>
  * 도구 기준점은 호출자가 명시한다. AS_REPORTED는 펑션베이 grasp_center처럼 ee_pose를 그대로
  * 쓰며 손끝이라고 가정하지 않는다. PANDA_HAND_TCP는 PandaHand.tcpFromArmPose를 사용한다.
  * 표현 좌표계의 변환은 하지 않는다. 오프셋은 공통 header 좌표계의 벡터이며, 손목 회전·미끄러짐
@@ -123,8 +128,9 @@ public final class MeasureObjectOffset
 
 	/** MEASURED에서만 measurement가 있다. 물체 파지·정착이나 후속 이동 가능 여부의 판정이 아니다. */
 	public record Result(String objectName, Outcome outcome, Optional<Measurement> measurement,
-			Duration elapsed, Diagnostics diagnostics) {
-		public boolean measured() { return outcome == Outcome.MEASURED; }
+			Duration elapsed, Diagnostics diagnostics) implements StepVerdict {
+		@Override public boolean goalReached() { return outcome == Outcome.MEASURED; }
+		@Override public @Nullable String failureReason() { return goalReached() ? null : "물체·도구 기준점 측정 불가: " + summary(); }
 		public String summary() {
 			return outcome + ": " + objectName + ", 유효 쌍 " + diagnostics.validSamples() + "건, 거부 "
 					+ diagnostics.rejectedSamples() + "건, 상한 이후 " + diagnostics.lateSamples()

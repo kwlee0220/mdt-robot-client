@@ -57,7 +57,7 @@ class WaitUntilObjectStillTest {
 		WaitUntilObjectStill.Result result;
 		if ( withStamp ) { wait.start(); result = wait.get(3, TimeUnit.SECONDS); }
 		else { result = wait.run(); }
-		assertTrue(result.settled());
+		assertTrue(result.goalReached());
 		assertTrue(wait.isCompleted());
 		assertSame(result, wait.getProgress());
 		assertEquals(0.4, result.object().orElseThrow().path("pose").path("position").path("x").asDouble());
@@ -85,7 +85,7 @@ class WaitUntilObjectStillTest {
 			return FakeTwinServer.json(200, body);
 		});
 		var options = mode.equals("antipodal") ? new WaitUntilObjectStill.Options(FAST.timeout(), FAST.positionToleranceM(), 0, FAST.quiet(), FAST.poll()) : FAST;
-		assertTrue(new WaitUntilObjectStill(server.client(), NAME, options).run().settled());
+		assertTrue(new WaitUntilObjectStill(server.client(), NAME, options).run().goalReached());
 	}
 
 	@ParameterizedTest @ValueSource(strings = { "drift", "rotation", "frozen", "frozen_stamp", "rewound", "rewound_stamp",
@@ -112,7 +112,7 @@ class WaitUntilObjectStillTest {
 		var options = new WaitUntilObjectStill.Options(Duration.ofMillis(450), FAST.positionToleranceM(), FAST.angleToleranceRad(),
 				Duration.ofMillis(220), FAST.poll());
 		WaitUntilObjectStill.Result result = new WaitUntilObjectStill(server.client(), NAME, options).run();
-		assertFalse(result.settled());
+		assertFalse(result.goalReached());
 		assertEquals(WaitUntilObjectStill.Outcome.TIMEOUT, result.outcome());
 		assertTrue(result.sample().isPresent(), "timeout keeps last valid observation without claiming settling");
 		assertCounts(result.diagnostics());
@@ -174,7 +174,7 @@ class WaitUntilObjectStillTest {
 			return FakeTwinServer.json(200, body);
 		});
 		WaitUntilObjectStill.Result result = new WaitUntilObjectStill(server.client(), NAME, FAST).run();
-		assertTrue(result.settled());
+		assertTrue(result.goalReached());
 		assertEquals(1, result.diagnostics().resets());
 		assertEquals(WaitUntilObjectStill.Rejection.OBJECT_MISSING, result.diagnostics().lastRejection());
 		assertCounts(result.diagnostics());
@@ -200,7 +200,7 @@ class WaitUntilObjectStillTest {
 		server.on("GET", SCENE, req -> FakeTwinServer.json(200, sample(0.4, Quaternion.aboutZ(0), Instant.now()))
 				.setHeadersDelay(200, TimeUnit.MILLISECONDS));
 		var result = new WaitUntilObjectStill(server.client(), NAME, FAST.withTimeout(Duration.ofMillis(80))).run();
-		assertFalse(result.settled());
+		assertFalse(result.goalReached());
 		assertTrue(result.sample().isEmpty());
 		assertEquals(1, result.diagnostics().lateSamples());
 		assertCounts(result.diagnostics());
@@ -273,9 +273,8 @@ class WaitUntilObjectStillTest {
 		wait.setExecutor(queue::add); wait.start();
 		assertThrows(IllegalStateException.class, wait::start);
 		assertThrows(IllegalStateException.class, wait::run);
-		assertFalse(wait.cancel(true));
 		queue.get(0).run();
-		assertFalse(wait.get().settled());
+		assertFalse(wait.get().goalReached());
 		assertTrue(server.requests.isEmpty());
 	}
 

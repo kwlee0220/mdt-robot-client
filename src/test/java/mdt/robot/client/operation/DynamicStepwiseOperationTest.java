@@ -88,11 +88,12 @@ class DynamicStepwiseOperationTest {
 		StepResult<Phase> observed = result.steps().get(0);
 		assertEquals(Phase.OBSERVE, observed.stage());
 		assertTrue(observed.goalReached());
-		assertTrue(observed.objectStill().settled());
-		assertTrue(observed.objectStill().object().isPresent());
+		WaitUntilObjectStill.Result still = observed.verdictAs(WaitUntilObjectStill.Result.class).orElseThrow();
+		assertTrue(still.goalReached());
+		assertTrue(still.object().isPresent());
 		assertTrue(observed.remoteResult().isEmpty(), "observation is not a remote operation");
-		assertNull(observed.movement());
-		assertNull(observed.gripper());
+		assertTrue(observed.verdictAs(MoveCheck.class).isEmpty());
+		assertTrue(observed.verdictAs(GripperCheck.class).isEmpty());
 	}
 
 	@Test void unsettledObservationStopsTheSequence() throws Exception {
@@ -104,7 +105,7 @@ class DynamicStepwiseOperationTest {
 				: Optional.of(gripper(Phase.ACT, "open")));
 		operation.run();
 		assertEquals(Phase.OBSERVE, operation.failed.stage());
-		assertTrue(operation.failed.why().startsWith("물체 정착 확인 불가: NO_VALID_SAMPLE"), operation.failed.why());
+		assertTrue(operation.failed.failureReason().startsWith("물체 정착 확인 불가: NO_VALID_SAMPLE"), operation.failed.failureReason());
 		assertTrue(server.requests("POST").isEmpty());
 	}
 
@@ -125,16 +126,6 @@ class DynamicStepwiseOperationTest {
 		ExecutionException error = assertThrows(ExecutionException.class, operation::run);
 		assertTrue(error.getCause().getMessage().startsWith("child operation has already started"));
 		assertTrue(server.requests.isEmpty());
-	}
-
-	@Test void dynamicOperationMustOverrideNextStep() {
-		var operation = new AbstractStepwiseOperation<Phase, Boolean>() {
-			@Override protected Boolean createResult(StepResult<Phase> failedStep, StepwiseProgress<Phase> progress) {
-				return failedStep == null;
-			}
-		};
-		ExecutionException error = assertThrows(ExecutionException.class, operation::run);
-		assertTrue(error.getCause().getMessage().endsWith("must override nextStep()"), error.getCause().getMessage());
 	}
 
 	@Test void noStepCompletesImmediately() throws Exception {

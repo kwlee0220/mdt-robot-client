@@ -18,20 +18,21 @@ import utils.Preconditions;
  * 목표 자세는 서버 기본 EE 프레임 기준의 절대 pose다. 자동 좌표 변환이나 높이 계산은 하지 않는다.
  * 이동은 MoveLinear의 위치 판정이며 자세 도달, 접촉, 특정 물체 파지 여부는 검증하지 않는다.
  * <p>
- * 단계별 목표 확인 실패는 goalsReached=false 결과로 정상 완료한다. 접수 거부·통신 오류는
+ * 단계별 목표 확인 실패는 goalReached=false 결과로 정상 완료한다. 접수 거부·통신 오류는
  * FAILED/ExecutionException, 외부 인터럽트는 CANCELLED다. run()의 인터럽트는 InterruptedException으로
  * 전달된다. 실행 중 결과·취소·실패 기록은 getProgress()로 조회한다.
  * graspAttempted는 GRASP 하위 실행 진입 직전에 기록한다. true이면 파지 실행 가능성을 고려해
  * 복구 정책을 정한다. 전송·파지 성공의 증거는 아니며 false도 실행 전부터 빈손이었음을 보장하지 않는다.
  * <p>
  * cancel(true)는 이후 단계 중단을 접수하고 현재 하위 연산에도 취소를 시도한다.
- * 동기 HTTP/세션 확보 전 등 하위 취소가 불가능하면 현재 단계가 끝날 때까지 CANCELLING이다.
+ * 하위 연산이 세션 확보 전이면 취소가 기록되어 세션을 받는 즉시 전달된다. 동기 HTTP처럼 하위 취소가 불가능하면
+ * 현재 단계가 끝날 때까지 CANCELLING이다.
  * 이때도 이후 단계는 실행하지 않는다. 하위 취소 오류는 progress에 남기고 현재 단계 종료를 기다린다.
- * 시작 중 취소와 실행 후 cancel(false)는 false다. 취소는 원격 정지·실제 파지 상태를 보장하지 않는다.
+ * 시작 중(STARTING) cancel(true)는 기록해 첫 단계 전에 끝내고, 실행 후 cancel(false)는 false다. 취소는 원격 정지·실제 파지 상태를 보장하지 않는다.
  * 자동 개방·복귀·재시도·비상정지는 하지 않는다. 작업 전체의 서버 자원을 점유하지 않으므로
  * 다른 호출자의 명령이 단계 사이에 끼어들지 않게 하는 것은 호출자의 책임이다.
  */
-public final class Grasp extends AbstractStepwiseOperation<Grasp.Stage, Grasp.Check> {
+public final class Grasp extends AbstractStepSequenceOperation<Grasp.Stage, Grasp.Check> {
 	public enum Stage { OPEN, APPROACH, DESCEND, GRASP }
 
 	/** 두 이동에 다른 속도·허용 오차·정착 상한을 지정할 수 있다. */
@@ -49,9 +50,10 @@ public final class Grasp extends AbstractStepwiseOperation<Grasp.Stage, Grasp.Ch
 		}
 	}
 
-	/** goalsReached는 목표 확인 여부, graspAttempted는 GRASP 실행 시도 여부다. 실제 파지를 보장하지 않는다. */
-	public record Check(boolean goalsReached, @Nullable Stage failedStage, @Nullable String why, List<StepResult<Stage>> steps,
-			boolean graspAttempted) {
+	/** goalReached는 목표 확인 여부, graspAttempted는 GRASP 실행 시도 여부다. 실제 파지를 보장하지 않는다. */
+	public record Check(boolean goalReached, @Nullable Stage failedStage, @Nullable String failureReason, List<StepResult<Stage>> steps,
+			boolean graspAttempted) implements StepVerdict {
+		@Override public @Nullable String failureReason() { return goalReached ? null : failureReason; }
 		public Check { steps = List.copyOf(steps); }
 	}
 
@@ -93,7 +95,7 @@ public final class Grasp extends AbstractStepwiseOperation<Grasp.Stage, Grasp.Ch
 
 	@Override protected Check createResult(@Nullable StepResult<Stage> failedStep, StepwiseProgress<Stage> progress) {
 		return new Check(failedStep == null, failedStep == null ? null : failedStep.stage(),
-				failedStep == null ? null : failedStep.why(), progress.steps(),
+				failedStep == null ? null : failedStep.failureReason(), progress.steps(),
 				progress.enteredStages().contains(Stage.GRASP));
 	}
 }

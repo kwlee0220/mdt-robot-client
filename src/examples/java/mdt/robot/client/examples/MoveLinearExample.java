@@ -14,7 +14,8 @@ import mdt.robot.client.RobotTwinClient;
  * <p>
  * 지금 자리에서 위로 {@code dz}(기본 5 cm) 올라갔다가 제자리로 돌아온다. 보이는 것 셋:
  * <ol>
- *   <li><b>서버 기본 EE 기준</b> — ee_pose에서 만든 목표를 그대로 보내며 추가 tip 변환은 하지 않는다.</li>
+ *   <li><b>관측 기준과 명령 기준</b> — ee_pose를 명령 기준으로 바꿔 보낸다. Isaac은 ee_pose가 panda_hand,
+ *       명령이 panda_link8이라 자세가 45° 다르고(위치는 같다), 펑션베이는 둘 다 grasp_center라 그대로다.</li>
  *   <li><b>목표는 시작할 때 한 번 읽은 값에서 절대값으로 만든다</b> — 매 이동 뒤 현재 자세를 읽어 다음 목표로
  *       이어 주면 처짐 오차가 쌓인다.</li>
  *   <li><b>{@code COMPLETED} 는 도달이 아니다</b> — {@code MoveLinear} 가 정착을 기다린 뒤
@@ -39,7 +40,8 @@ public final class MoveLinearExample {
 		}
 
 		// 시작 자세를 한 번만 읽고, 두 목표를 모두 여기서 절대값으로 만든다.
-		Pose start = Pose.fromJson(twin.read("ee_pose"));
+		// 읽은 ee_pose를 명령 기준으로 바꿔야 Isaac에서 손목이 돌지 않는다(ExampleSupport.commandFromObserved).
+		Pose start = ExampleSupport.commandFromObserved(twin, Pose.fromJson(twin.read("ee_pose")));
 		Pose up = start.withPosition(start.position().plus(0.0, 0.0, dz));
 		System.out.println("시작 " + ExampleSupport.fmt(start.position()) + " → 위 " + ExampleSupport.fmt(up.position()));
 

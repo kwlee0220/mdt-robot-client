@@ -75,12 +75,12 @@ class PlaceTest {
 		if ( async ) { place.start(); check = place.get(3, TimeUnit.SECONDS); }
 		else { check = place.run(); }
 		assertTrue(place.isCompleted());
-		assertTrue(check.goalsReached());
+		assertTrue(check.goalReached());
 		assertTrue(check.releaseAttempted());
 		assertTrue(check.releaseConfirmed());
 		assertTrue(check.retreatReached());
 		assertNull(check.failedStage());
-		assertNull(check.why());
+		assertNull(check.failureReason());
 		assertEquals(List.of(Place.Stage.values()), check.steps().stream().map(StepResult::stage).toList());
 		assertEquals(ABOVE.toJson(), bodies.get(0).get("pose"));
 		assertEquals(TARGET.toJson(), bodies.get(1).get("pose"));
@@ -110,9 +110,9 @@ class PlaceTest {
 		Place place = place();
 		Place.Check check = place.run();
 		assertTrue(place.isCompleted());
-		assertFalse(check.goalsReached());
+		assertFalse(check.goalReached());
 		assertEquals(Place.Stage.values()[failed - 1], check.failedStage());
-		assertNotNull(check.why());
+		assertNotNull(check.failureReason());
 		assertEquals(failed >= 3, check.releaseAttempted());
 		assertEquals(failed == 4, check.releaseConfirmed(), "retreat failure must not erase confirmed opening");
 		assertFalse(check.retreatReached());
@@ -159,7 +159,7 @@ class PlaceTest {
 		server.on("GET", "/variables/ee_pose", req -> FakeTwinServer.json(200, Map.of("quality", "STALE")));
 		Place.Check check = new Place(server.client(), ABOVE, TARGET, RETREAT, options).run();
 		assertEquals(Place.Stage.values()[stage - 1], check.failedStage());
-		assertTrue(check.why().contains("NO_VALID_SAMPLE"));
+		assertTrue(check.failureReason().contains("NO_VALID_SAMPLE"));
 		assertEquals(stage == 4, check.releaseConfirmed());
 		assertEquals(stage, server.requests("POST").size());
 	}
@@ -263,10 +263,9 @@ class PlaceTest {
 		place.start();
 		assertThrows(IllegalStateException.class, place::start);
 		assertThrows(IllegalStateException.class, place::run);
-		assertFalse(place.cancel(true));
 		assertTrue(server.requests.isEmpty());
 		queue.get(0).run();
-		assertTrue(place.get().goalsReached());
+		assertTrue(place.get().goalReached());
 	}
 
 	@ParameterizedTest @ValueSource(ints = { 3, 4 })
@@ -335,6 +334,21 @@ class PlaceTest {
 		assertThrows(IllegalArgumentException.class, () -> new Place.Options(FAST.approach(), FAST.descent(),
 				FAST.retreat().withSettleTimeout(Duration.ofSeconds(Long.MAX_VALUE)), "open"));
 		assertTrue(server.requests.isEmpty());
+	}
+
+	@Test void builderNamesEachPoseAndDefaultsRetreatToApproach() throws Exception {
+		var twin = server.client();
+		IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+				() -> Place.builder(twin).approachPose(ABOVE).build());
+		assertEquals("placePose is not set", e.getMessage());
+		assertThrows(IllegalArgumentException.class, () -> Place.builder(twin).placePose(TARGET).build());
+		assertThrows(IllegalArgumentException.class,
+				() -> Place.builder(twin).approachPose(ABOVE).placePose(TARGET).timeout(Duration.ZERO).build());
+		assertTrue(server.requests.isEmpty());
+
+		Place.Check check = Place.builder(twin).approachPose(ABOVE).placePose(TARGET).options(FAST).build().run();
+		assertTrue(check.goalReached(), check.failureReason());
+		assertTrue(check.retreatReached());
 	}
 
 	private Place place() { return new Place(server.client(), ABOVE, TARGET, RETREAT, FAST); }

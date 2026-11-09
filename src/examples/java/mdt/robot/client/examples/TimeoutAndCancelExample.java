@@ -33,7 +33,8 @@ import mdt.robot.client.TwinException;
 public final class TimeoutAndCancelExample {
 	public static void main(String[] args) throws InterruptedException, ExecutionException {
 		RobotTwinClient twin = ExampleSupport.connect(args);
-		Pose start = Pose.fromJson(twin.read("ee_pose"));
+		// 읽은 ee_pose를 명령 기준으로 바꿔야 Isaac에서 손목이 돌지 않는다(ExampleSupport.commandFromObserved).
+		Pose start = ExampleSupport.commandFromObserved(twin, Pose.fromJson(twin.read("ee_pose")));
 		Pose up = start.withPosition(start.position().plus(0.0, 0.0, 0.10));
 
 		Map<String,Object> inputs = Map.of("pose", up, "velocity_scaling", 0.05);

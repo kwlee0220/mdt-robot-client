@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 import mdt.robot.client.RobotTwinClient;
+import mdt.robot.client.operation.ClosedLoopCheck;
 import mdt.robot.client.operation.MoveToNamedTarget;
 
 /**
@@ -14,7 +15,7 @@ import mdt.robot.client.operation.MoveToNamedTarget;
  * ({@code ExecutionException}의 원인이 {@code TwinException}).
  * <p>
  * 관절 공간 이동이라 부분 실행은 없지만, <b>개루프(JGPC · 펑션베이)에서는 정상 종료해도 도달을 보장하지
- * 않는다</b> — {@code reached=false} 와 안내가 정상일 수 있다.
+ * 않는다</b> — {@code goalReached=false} 와 안내가 정상일 수 있다.
  *
  * <pre>
  *   gradle runExample -Pexample=MoveToNamedTargetExample               # ready
@@ -31,17 +32,17 @@ public final class MoveToNamedTargetExample {
 
 		System.out.println("쓸 수 있는 이름: " + twin.read("named_targets"));
 
-		MoveToNamedTarget.Check check = new MoveToNamedTarget(twin, target, 0.3).run();
-		if ( check.reached() ) {
+		ClosedLoopCheck check = new MoveToNamedTarget(twin, target, 0.3).run();
+		if ( check.goalReached() ) {
 			System.out.printf("'%s' 도달 (폐루프 실행)%n", target);
 		}
 		else if ( check.result().isCompleted() ) {
 			// 개루프 스택: 끝났지만 도달은 모른다 — 필요하면 ee_pose · joint_states 로 직접 확인한다.
-			System.out.printf("'%s' 이동은 끝났지만 도달을 보장하지 않는다: %s%n", target, check.why());
+			System.out.printf("'%s' 이동은 끝났지만 도달을 보장하지 않는다: %s%n", target, check.failureReason());
 		}
 		else {
 			System.out.printf("'%s' 이동 실패: %s %s — %s%n", target, check.result().status(),
-								check.result().errorCode(), check.why());
+								check.result().errorCode(), check.failureReason());
 		}
 	}
 }

@@ -21,7 +21,7 @@ import utils.Preconditions;
  * 허용 오차는 도달 판정 기준이며 충돌을 막는 이동 제한이 아니다. 개방 확인 후 고정 대기 없이 후퇴한다.
  * peg 삽입처럼 개방 전 착석 확인이 필요한 작업에는 별도 태스크의 검증이 필요하다.
  * <p>
- * run() 또는 start()/get()으로 한 번 실행한다. 목표 확인 불가는 goalsReached=false로 정상 완료하고
+ * run() 또는 start()/get()으로 한 번 실행한다. 목표 확인 불가는 goalReached=false로 정상 완료하고
  * 이후 단계는 실행하지 않는다. 접수 거부·통신 오류·비동기 대기 시간 초과는 FAILED/ExecutionException,
  * 외부 인터럽트는 CANCELLED다. run()은 외부 인터럽트를 InterruptedException으로 전달한다.
  * <p>
@@ -29,13 +29,13 @@ import utils.Preconditions;
  * false도 물체를 계속 쥐고 있음을 보장하지 않는다. Check와 getProgress()의 releaseConfirmed 및
  * retreatReached로 개방 목표 확인과 후퇴 도달을 구별한다. 실패·취소 후에도 단계 기록을 보존한다.
  * <p>
- * cancel(true)는 후속 단계 중단을 접수하고 현재 하위 연산에 취소를 시도한다. 취소 불가인 동기 HTTP나
- * 세션 확보 전이면 현재 단계 종료를 기다린다. 취소는 실제 정지를 보장하지 않는다. 개방 뒤 취소하면
+ * cancel(true)는 후속 단계 중단을 접수하고 현재 하위 연산에 취소를 시도한다. 하위 연산이 세션 확보 전이면 취소가
+ * 기록되어 세션을 받는 즉시 전달되고, 취소 불가인 동기 HTTP면 현재 단계 종료를 기다린다. 취소는 실제 정지를 보장하지 않는다. 개방 뒤 취소하면
  * 후퇴하지 않을 수 있다. 자동 복구·재파지·재시도·비상정지는 수행하지 않는다.
- * STARTING 중 취소와 실행 중 cancel(false)는 거부한다. 전체 작업의 서버 자원을 예약하지 않으므로
+ * STARTING 중 cancel(true)는 기록해 첫 단계 전에 끝내고, 실행 중 cancel(false)는 거부한다. 전체 작업의 서버 자원을 예약하지 않으므로
  * 다른 호출자의 명령과의 조율은 태스크가 맡는다.
  */
-public final class Place extends AbstractStepwiseOperation<Place.Stage, Place.Check> {
+public final class Place extends AbstractStepSequenceOperation<Place.Stage, Place.Check> {
 	public enum Stage { APPROACH, DESCEND, RELEASE, RETREAT }
 
 	/** 세 이동에 다른 속도·허용 오차·정착 상한을 지정할 수 있다. */
@@ -54,11 +54,12 @@ public final class Place extends AbstractStepwiseOperation<Place.Stage, Place.Ch
 		}
 	}
 
-	/** goalsReached는 목표 확인 여부, releaseAttempted는 RELEASE 실행 시도 여부다. 실제 물체 해제를 보장하지 않는다. */
-	public record Check(boolean goalsReached, @Nullable Stage failedStage, @Nullable String why, List<StepResult<Stage>> steps,
-			boolean releaseAttempted) {
+	/** goalReached는 목표 확인 여부, releaseAttempted는 RELEASE 실행 시도 여부다. 실제 물체 해제를 보장하지 않는다. */
+	public record Check(boolean goalReached, @Nullable Stage failedStage, @Nullable String failureReason, List<StepResult<Stage>> steps,
+			boolean releaseAttempted) implements StepVerdict {
+		@Override public @Nullable String failureReason() { return goalReached ? null : failureReason; }
 		public Check { steps = List.copyOf(steps); }
-		/** 개방 단계에서 받은 atGoal 판정. false는 미확인도 포함한다. */
+		/** 개방 단계의 goalReached 판정(서버 at_goal). false는 미확인도 포함한다. */
 		public boolean releaseConfirmed() { return steps.stream().anyMatch(step -> step.stage() == Stage.RELEASE && step.goalReached()); }
 		public boolean retreatReached() { return steps.stream().anyMatch(step -> step.stage() == Stage.RETREAT && step.goalReached()); }
 	}
@@ -88,6 +89,46 @@ public final class Place extends AbstractStepwiseOperation<Place.Stage, Place.Ch
 		super(sequence(twin, approachPose, placePose, retreatPose, options, timeout));
 	}
 
+	/**
+	 * 인자를 역할 이름으로 지정하는 빌더. approachPose·placePose는 필수다. retreatPose를 생략하면 approachPose로
+	 * 후퇴한다. options 기본값은 {@link Options#DEFAULT}, timeout 기본값은 클라이언트의 operationTimeout이다.
+	 * 검증 규칙은 생성자와 같고 build()에서 통신 전에 한다.
+	 */
+	public static Builder builder(RobotTwinClient twin) {
+		return new Builder(twin);
+	}
+
+	public static final class Builder {
+		private final RobotTwinClient m_twin;
+		private @Nullable Pose m_approachPose;
+		private @Nullable Pose m_placePose;
+		private @Nullable Pose m_retreatPose;
+		private Options m_options = Options.DEFAULT;
+		private @Nullable Duration m_timeout;
+
+		private Builder(RobotTwinClient twin) {
+			Preconditions.checkNotNullArgument(twin, "twin is null");
+			m_twin = twin;
+		}
+
+		public Builder approachPose(Pose value) { m_approachPose = value; return this; }
+		public Builder placePose(Pose value) { m_placePose = value; return this; }
+		/** 생략하면 approachPose로 후퇴한다. */
+		public Builder retreatPose(Pose value) { m_retreatPose = value; return this; }
+		public Builder options(Options value) { m_options = value; return this; }
+		/** 각 하위 원격 비동기 연산의 대기 상한. 전체 Place 실행 상한이 아니다. */
+		public Builder timeout(Duration value) { m_timeout = value; return this; }
+
+		/** @throws IllegalArgumentException 필수 자세가 없거나 입력이 유효하지 않은 경우. */
+		public Place build() {
+			Preconditions.checkArgument(m_approachPose != null, "approachPose is not set");
+			Preconditions.checkArgument(m_placePose != null, "placePose is not set");
+			Pose retreat = m_retreatPose != null ? m_retreatPose : m_approachPose;
+			return new Place(m_twin, m_approachPose, m_placePose, retreat, m_options,
+							m_timeout != null ? m_timeout : defaultTimeout(m_twin));
+		}
+	}
+
 	private static List<Step<Stage>> sequence(RobotTwinClient twin, Pose approachPose, Pose placePose, Pose retreatPose, Options options, Duration timeout) {
 		Preconditions.checkNotNullArgument(options, "options is null");
 		validatePose(approachPose);
@@ -104,7 +145,7 @@ public final class Place extends AbstractStepwiseOperation<Place.Stage, Place.Ch
 
 	@Override protected Check createResult(@Nullable StepResult<Stage> failedStep, StepwiseProgress<Stage> progress) {
 		return new Check(failedStep == null, failedStep == null ? null : failedStep.stage(),
-				failedStep == null ? null : failedStep.why(), progress.steps(),
+				failedStep == null ? null : failedStep.failureReason(), progress.steps(),
 				progress.enteredStages().contains(Stage.RELEASE));
 	}
 }

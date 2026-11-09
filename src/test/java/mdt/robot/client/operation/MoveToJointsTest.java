@@ -71,13 +71,13 @@ class MoveToJointsTest {
 		joints.put("panda_finger_joint1", 0.04);
 		assertTrue(m_server.requests.isEmpty());
 		assertTrue(move.getRemoteResult().isEmpty());
-		MoveToJoints.Check check = move.run();
-		assertTrue(check.reached());
+		ClosedLoopCheck check = move.run();
+		assertTrue(check.goalReached());
 		assertSame(check.result(), move.getRemoteResult().orElseThrow());
 		JsonNode inputs = JsonMapper.builder().build().readTree(body.get()).get("inputs");
 		assertEquals(1, inputs.get("joints").size());
 		assertEquals(-0.2, inputs.at("/joints/panda_joint7").doubleValue());
-		assertEquals(MoveToJoints.DEFAULT_VELOCITY_SCALING, inputs.get("velocity_scaling").doubleValue());
+		assertEquals(MotionLimits.DEFAULT_VELOCITY_SCALING, inputs.get("velocity_scaling").doubleValue());
 		assertFalse(inputs.has("max_duration_sec"));
 		assertTrue(m_server.requests("GET /variables").isEmpty());
 	}
@@ -89,13 +89,13 @@ class MoveToJointsTest {
 			body.set(req.getBody().readUtf8());
 			return completed();
 		});
-		MoveToJoints.Options options = MoveToJoints.Options.DEFAULT.withVelocityScaling(null)
+		MotionLimits options = MotionLimits.DEFAULT.withVelocityScaling(null)
 				.withMaxDuration(Duration.ofSeconds(60)).withTimeout(Duration.ofSeconds(90));
-		assertTrue(new MoveToJoints(m_server.client(), Map.of("joint_a", 0.2), options).run().reached());
+		assertTrue(new MoveToJoints(m_server.client(), Map.of("joint_a", 0.2), options).run().goalReached());
 		JsonNode inputs = JsonMapper.builder().build().readTree(body.get()).get("inputs");
 		assertFalse(inputs.has("velocity_scaling"));
 		assertEquals(60, inputs.path("max_duration_sec").asInt());
-		assertEquals(0.3, MoveToJoints.Options.DEFAULT.velocityScaling().doubleValue());
+		assertEquals(0.3, MotionLimits.DEFAULT.velocityScaling().doubleValue());
 	}
 
 	@ParameterizedTest
@@ -106,17 +106,17 @@ class MoveToJointsTest {
 						(value.equals("missing") ? "" : "\"closed_loop\":" + value + ",") +
 						"\"final_joints\":{\"position\":{\"joint_a\":0.2}},\"measured_age_ms\":1000}}"));
 		MoveToJoints move = new MoveToJoints(m_server.client(), Map.of("joint_a", 0.2));
-		MoveToJoints.Check check = move.run();
+		ClosedLoopCheck check = move.run();
 		assertTrue(move.isCompleted());
-		assertEquals(value.equals("true"), check.reached());
+		assertEquals(value.equals("true"), check.goalReached());
 		assertEquals(0.2, check.result().output("final_joints").at("/position/joint_a").doubleValue());
 		assertEquals(1000, check.result().output("measured_age_ms").intValue());
-		if ( value.equals("true") ) { assertNull(check.why()); }
-		else if ( value.equals("false") ) { assertTrue(check.why().contains("open loop")); }
+		if ( value.equals("true") ) { assertNull(check.failureReason()); }
+		else if ( value.equals("false") ) { assertTrue(check.failureReason().contains("open loop")); }
 		else if ( value.equals("null") || value.equals("missing") ) {
-			assertTrue(check.why().contains("정보 없음"));
+			assertTrue(check.failureReason().contains("정보 없음"));
 		}
-		else { assertTrue(check.why().contains("받은 값: " + value)); }
+		else { assertTrue(check.failureReason().contains("받은 값: " + value)); }
 		assertTrue(m_server.requests("GET /variables").isEmpty());
 	}
 
@@ -126,11 +126,11 @@ class MoveToJointsTest {
 		m_server.on("POST", MOVE, req -> FakeTwinServer.json(200, Map.of("status", status,
 				"error", Map.of("code", "PLANNING_FAILED", "message", "no plan"))));
 		MoveToJoints move = new MoveToJoints(m_server.client(), Map.of("joint_a", 0.0));
-		MoveToJoints.Check check = move.run();
+		ClosedLoopCheck check = move.run();
 		assertTrue(move.isCompleted());
-		assertFalse(check.reached());
-		assertNotNull(check.why());
-		assertEquals(status, check.result().status());
+		assertFalse(check.goalReached());
+		assertNotNull(check.failureReason());
+		assertEquals(status, check.result().status().name());
 		assertSame(check.result(), move.getRemoteResult().orElseThrow());
 	}
 
@@ -165,15 +165,14 @@ class MoveToJointsTest {
 				1.0, Duration.ofSeconds(5));
 		List<Runnable> queued = new ArrayList<>();
 		move.setExecutor(queued::add);
-		RobotTwinOperation<MoveToJoints.Check> operation = move;
+		RobotTwinOperation<ClosedLoopCheck> operation = move;
 		operation.start();
 		assertThrows(IllegalStateException.class, operation::start);
 		assertThrows(IllegalStateException.class, move::run);
-		assertFalse(operation.cancel(true));
 		assertEquals(1, queued.size());
 		assertTrue(m_server.requests.isEmpty());
 		queued.get(0).run();
-		assertTrue(operation.get().reached());
+		assertTrue(operation.get().goalReached());
 		assertEquals(1, m_server.requests("POST " + MOVE).size());
 		JsonNode inputs = JsonMapper.builder().build().readTree(body.get()).get("inputs");
 		assertEquals(2, inputs.get("joints").size());
@@ -214,7 +213,7 @@ class MoveToJointsTest {
 	@Test
 	void asyncTimeoutDoesNotCancelRemoteOrAcquireLateSnapshot() throws Exception {
 		configureAsync();
-		MoveToJoints.Options options = MoveToJoints.Options.DEFAULT.withVelocityScaling(0.2)
+		MotionLimits options = MotionLimits.DEFAULT.withVelocityScaling(0.2)
 				.withMaxDuration(Duration.ofSeconds(60)).withTimeout(Duration.ofMillis(200));
 		MoveToJoints move = new MoveToJoints(m_server.client(), Map.of("joint_a", 0.0), options);
 		ExecutionException error = assertThrows(ExecutionException.class, move::run);
@@ -232,7 +231,7 @@ class MoveToJointsTest {
 		m_status.set("COMPLETED");
 		MoveToJoints move = new MoveToJoints(m_server.client(), Map.of("joint_a", 0.0));
 		move.start();
-		assertTrue(move.get(3, TimeUnit.SECONDS).reached());
+		assertTrue(move.get(3, TimeUnit.SECONDS).goalReached());
 		assertTrue(m_polled.await(3, TimeUnit.SECONDS));
 		assertEquals("move_to_joints", move.getRemoteResult().orElseThrow().operation());
 	}
@@ -290,12 +289,12 @@ class MoveToJointsTest {
 		joints.put("joint_z", 0.3);
 		joints.put("joint_a", -0.4);
 		joints.put("joint_m", 0.0);
-		MoveToJoints.Options options = MoveToJoints.Options.DEFAULT.withMaxDuration(Duration.ofMillis(1250));
+		MotionLimits options = MotionLimits.DEFAULT.withMaxDuration(Duration.ofMillis(1250));
 		MoveToJoints move = new MoveToJoints(m_server.client(), joints, options);
 		joints.clear();
 		joints.put("wrong_joint", 9.0);
 		assertTrue(m_server.requests.isEmpty());
-		assertTrue(move.run().reached());
+		assertTrue(move.run().goalReached());
 		JsonNode inputs = JsonMapper.builder().build().readTree(body.get()).get("inputs");
 		List<String> names = new ArrayList<>();
 		inputs.get("joints").fieldNames().forEachRemaining(names::add);
@@ -308,7 +307,7 @@ class MoveToJointsTest {
 	@ParameterizedTest
 	@CsvSource({ "120,60,120", "120,120,150", "10,60,90", "90,60,90" })
 	void automaticTimeoutUsesLargerOfClientDefaultAndServerLimitWithMargin(long client, long server, long expected) {
-		MoveToJoints.Options options = MoveToJoints.Options.DEFAULT.withMaxDuration(Duration.ofSeconds(server));
+		MotionLimits options = MotionLimits.DEFAULT.withMaxDuration(Duration.ofSeconds(server));
 		assertEquals(Duration.ofSeconds(expected), options.resolveTimeout(Duration.ofSeconds(client)));
 		assertTrue(m_server.requests.isEmpty());
 	}
@@ -316,8 +315,8 @@ class MoveToJointsTest {
 	@Test
 	void absentServerLimitAndExplicitClientTimeoutKeepExistingPolicy() {
 		Duration clientDefault = Duration.ofSeconds(75);
-		assertEquals(clientDefault, MoveToJoints.Options.DEFAULT.resolveTimeout(clientDefault));
-		MoveToJoints.Options options = MoveToJoints.Options.DEFAULT.withMaxDuration(Duration.ofSeconds(60))
+		assertEquals(clientDefault, MotionLimits.DEFAULT.resolveTimeout(clientDefault));
+		MotionLimits options = MotionLimits.DEFAULT.withMaxDuration(Duration.ofSeconds(60))
 				.withTimeout(Duration.ofSeconds(1));
 		assertEquals(Duration.ofSeconds(1), options.resolveTimeout(clientDefault));
 		assertEquals(Duration.ofSeconds(90), options.withTimeout(null).resolveTimeout(clientDefault));
@@ -333,7 +332,7 @@ class MoveToJointsTest {
 			return FakeTwinServer.json(400, Map.of("error", Map.of("code", "INVALID_INPUT", "message", "server range")));
 		});
 		MoveToJoints move = new MoveToJoints(m_server.client(), Map.of("joint_a", 0.0),
-				MoveToJoints.Options.DEFAULT.withMaxDuration(Duration.ofMillis(millis)));
+				MotionLimits.DEFAULT.withMaxDuration(Duration.ofMillis(millis)));
 		ExecutionException error = assertThrows(ExecutionException.class, move::run);
 		assertEquals("INVALID_INPUT", assertInstanceOf(TwinException.class, error.getCause()).getCode());
 		assertEquals(millis / 1000.0, JsonMapper.builder().build().readTree(body.get()).at("/inputs/max_duration_sec").doubleValue());
@@ -342,14 +341,14 @@ class MoveToJointsTest {
 	@Test
 	void invalidOptionsAndUnrepresentableAutomaticTimeoutAreRejectedLocally() {
 		for ( Duration duration : new Duration[] { Duration.ZERO, Duration.ofNanos(-1) } ) {
-			assertThrows(IllegalArgumentException.class, () -> MoveToJoints.Options.DEFAULT.withMaxDuration(duration));
-			assertThrows(IllegalArgumentException.class, () -> MoveToJoints.Options.DEFAULT.withTimeout(duration));
+			assertThrows(IllegalArgumentException.class, () -> MotionLimits.DEFAULT.withMaxDuration(duration));
+			assertThrows(IllegalArgumentException.class, () -> MotionLimits.DEFAULT.withTimeout(duration));
 		}
-		assertThrows(IllegalArgumentException.class, () -> MoveToJoints.Options.DEFAULT.withVelocityScaling(Double.NaN));
+		assertThrows(IllegalArgumentException.class, () -> MotionLimits.DEFAULT.withVelocityScaling(Double.NaN));
 		assertThrows(IllegalArgumentException.class,
-				() -> new MoveToJoints(m_server.client(), Map.of("joint_a", 0.0), (MoveToJoints.Options)null));
+				() -> new MoveToJoints(m_server.client(), Map.of("joint_a", 0.0), (MotionLimits)null));
 		assertThrows(IllegalArgumentException.class, () -> new MoveToJoints(m_server.client(), Map.of("joint_a", 0.0),
-				MoveToJoints.Options.DEFAULT.withMaxDuration(Duration.ofSeconds(Long.MAX_VALUE))));
+				MotionLimits.DEFAULT.withMaxDuration(Duration.ofSeconds(Long.MAX_VALUE))));
 		assertTrue(m_server.requests.isEmpty());
 	}
 
@@ -364,10 +363,10 @@ class MoveToJointsTest {
 		m_server.on("GET", SESSION, req -> FakeTwinServer.json(200,
 				Map.of("status", "FAILED", "error", Map.of("code", "TIMEOUT", "message", "server limit exceeded"))));
 		MoveToJoints move = new MoveToJoints(m_server.client(), Map.of("joint_a", 0.0),
-				MoveToJoints.Options.DEFAULT.withMaxDuration(Duration.ofSeconds(2)));
-		MoveToJoints.Check check = move.run();
+				MotionLimits.DEFAULT.withMaxDuration(Duration.ofSeconds(2)));
+		ClosedLoopCheck check = move.run();
 		assertTrue(move.isCompleted());
-		assertFalse(check.reached());
+		assertFalse(check.goalReached());
 		assertEquals("TIMEOUT", check.result().errorCode());
 		assertSame(check.result(), move.getRemoteResult().orElseThrow());
 		assertEquals(2, JsonMapper.builder().build().readTree(body.get()).at("/inputs/max_duration_sec").intValue());

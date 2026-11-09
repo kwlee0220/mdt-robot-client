@@ -44,7 +44,7 @@ public final class ReadStateExample {
 		joints.path("position").fields().forEachRemaining(e ->
 				System.out.printf("  %-20s %+.4f%n", e.getKey(), e.getValue().asDouble()));
 
-		// 그리퍼 성공 판정은 at_goal 하나다. width 는 개구 폭(m)이며 못 구하면 NaN 이다.
+		// 그리퍼 성공 판정은 at_goal 하나다. width 는 개구 폭(m)이며 측정하지 못하면 null 이다(0으로 해석하지 않는다).
 		JsonNode gripper = twin.read("gripper_state");
 		System.out.printf("그리퍼 goal=%s, at_goal=%s, width=%s%n", gripper.path("goal").asText("-"),
 							gripper.path("at_goal").asText(), gripper.path("width").asText());

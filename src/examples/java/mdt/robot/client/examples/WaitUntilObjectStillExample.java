@@ -28,7 +28,7 @@ public final class WaitUntilObjectStillExample {
 			System.out.println(result.summary());
 			System.out.println("관측 경과: " + result.elapsed());
 			result.object().ifPresent(object -> System.out.println(
-					(result.settled() ? "정착 판정에 사용한 물체: " : "마지막 유효 물체 (정착 확인 안 됨): ") + object));
+					(result.goalReached() ? "정착 판정에 사용한 물체: " : "마지막 유효 물체 (정착 확인 안 됨): ") + object));
 		}
 		catch ( InterruptedException | ExecutionException | CancellationException e ) {
 			System.out.println("관측 진행 기록: " + operation.getProgress().summary());

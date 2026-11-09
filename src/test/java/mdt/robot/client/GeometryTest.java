@@ -192,4 +192,23 @@ class GeometryTest {
 				"{'header':{'frame_id':'panda_link0'},'pose':{'position':{'x':1,'y':2,'z':3},'orientation':{'x':0,'y':0,'z':0,'w':1}}}"));
 		assertEquals(new Position(1, 2, 3), pose.position());
 	}
+
+	@Test
+	void incompletePositionOrOrientationIsRejected() throws Exception {
+		// 빠진 성분을 0으로 읽지 않는다.
+		JsonNode noZ = MAPPER.readTree("{\"position\":{\"x\":0.1,\"y\":0.2}}");
+		assertThrows(IllegalArgumentException.class, () -> Geometry.centerOf(noZ));
+		JsonNode emptyOrientation = MAPPER.readTree("{\"position\":{\"x\":0,\"y\":0,\"z\":0},\"orientation\":{}}");
+		assertThrows(IllegalArgumentException.class, () -> Geometry.orientationOf(emptyOrientation));
+		JsonNode notUnit = MAPPER.readTree("{\"position\":{\"x\":0,\"y\":0,\"z\":0},"
+										+ "\"orientation\":{\"x\":0,\"y\":0,\"z\":0,\"w\":2}}");
+		assertThrows(IllegalArgumentException.class, () -> Geometry.orientationOf(notUnit));
+		assertThrows(IllegalArgumentException.class, () -> Pose.fromJson(emptyOrientation));
+		assertThrows(IllegalArgumentException.class, () -> Pose.fromJson(notUnit));
+		JsonNode ok = MAPPER.readTree("{\"pose\":{\"position\":{\"x\":0.1,\"y\":0.2,\"z\":0.3},"
+										+ "\"orientation\":{\"x\":0,\"y\":0,\"z\":0,\"w\":1}}}");
+		Pose pose = Pose.fromJson(ok);
+		assertEquals(0.3, pose.position().z(), EPS);
+		assertEquals(1.0, pose.orientation().w(), EPS);
+	}
 }

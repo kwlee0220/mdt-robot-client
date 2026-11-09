@@ -5,7 +5,6 @@ import java.util.List;
 import java.util.Optional;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 
 /**
  * 좌표·기하 헬퍼 — **기반 층**이다. 트윈을 부르지 않는 순수 계산이다.
@@ -17,7 +16,7 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
  * 물체는 트윈이 주는 JSON 그대로 받는다. 같은 물체가 출처에 따라 두 모양으로 온다.
  * <pre>
  *   reset_scene / begin_task 의 outputs.objects 원소
- *       {"name":…, "type":…, "dimensions":[…], "position":{x,y,z}}
+ *       {"name":…, "type":…, "dimensions":[…], "position":{x,y,z}, "orientation":{x,y,z,w}, "yaw_deg":…}
  *   scene_objects 변수의 objects[이름]
  *       {"type":…, "dimensions":[…], "pose":{"position":{…}, "orientation":{…}}}
  * </pre>
@@ -25,7 +24,6 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
  * @author Kang-Woo Lee (ETRI)
  */
 public final class Geometry {
-	private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
 	/** x축 180° — 그리퍼가 아래를 본다. 손끝(TCP) 기준 자세다. */
 	public static final Quaternion DOWN = new Quaternion(1.0, 0.0, 0.0, 0.0);
@@ -98,7 +96,7 @@ public final class Geometry {
 												+ "element of reset_scene/begin_task objects or a value of "
 												+ "scene_objects (keys: " + keys + ")");
 		}
-		return MAPPER.convertValue(position, Position.class);
+		return readPosition(position);
 	}
 
 	/**
@@ -113,8 +111,30 @@ public final class Geometry {
 		if ( orientation == null || !orientation.isObject() ) {
 			return Optional.empty();
 		}
-		return Optional.of(MAPPER.convertValue(orientation, Quaternion.class));
+		return Optional.of(readUnitQuaternion(orientation));
 	}
+
+	/**
+	 * {@code {x, y, z}} JSON을 위치로 읽는다. 세 성분이 모두 유한한 숫자여야 하며, 빠진 성분을 0으로 읽지 않는다.
+	 */
+	static Position readPosition(JsonNode node) {
+		double[] p = finiteVector(node, "position", "x", "y", "z");
+		return new Position(p[0], p[1], p[2]);
+	}
+
+	/**
+	 * {@code {x, y, z, w}} JSON을 단위 쿼터니언으로 읽는다. 네 성분이 모두 유한한 숫자이고 길이가 1에서 0.001보다
+	 * 많이 벗어나지 않아야 하며, 정규화해서 돌려준다.
+	 */
+	static Quaternion readUnitQuaternion(JsonNode node) {
+		double[] q = finiteVector(node, "orientation", "x", "y", "z", "w");
+		double norm = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+		if ( Math.abs(norm - 1.0) > UNIT_QUATERNION_TOLERANCE ) {
+			throw new IllegalArgumentException("orientation is not a unit quaternion (norm " + norm + "): " + node);
+		}
+		return new Quaternion(q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm);
+	}
+
 
 	/**
 	 * 물체를 <b>면으로</b> 잡기 위한 손목 yaw(rad)를 반환한다.
@@ -165,7 +185,8 @@ public final class Geometry {
 	 * 물체의 로컬 z축을 베이스 좌표로 돌린 <b>위를 향하는</b> 단위벡터를 반환한다. 원기둥이면 축 방향이다.
 	 * <p>
 	 * 아래를 향하면 부호를 뒤집는다 — 원기둥은 위아래가 대칭이라 뒤집혀 놓여도 같은 물체다.
-	 * 자세가 없으면 회전이 없는 것으로 본다(레시피에 회전이 없으면 로봇 트윈은 orientation을 생략한다).
+	 * 자세가 없으면 회전이 없는 것으로 본다. 지금 트윈은 두 모양 모두 자세를 준다(reset_scene은 레시피에
+ * yaw가 없으면 항등 쿼터니언을 준다). 자세가 빠진 응답에 대한 방어다.
 	 * 쿼터니언 길이가 1에서 0.001보다 많이 벗어나면 거부하고, 그 안이면 정규화해서 쓴다.
 	 *
 	 * @param obj	물체 한 개의 JSON. 두 모양(클래스 설명 참조)을 모두 받는다.
@@ -232,12 +253,7 @@ public final class Geometry {
 		if ( node == null || node.isNull() ) {
 			return new Quaternion(0.0, 0.0, 0.0, 1.0);
 		}
-		double[] q = finiteVector(node, "orientation", "x", "y", "z", "w");
-		double norm = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-		if ( Math.abs(norm - 1.0) > UNIT_QUATERNION_TOLERANCE ) {
-			throw new IllegalArgumentException("orientation is not a unit quaternion (norm " + norm + "): " + node);
-		}
-		return new Quaternion(q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm);
+		return readUnitQuaternion(node);
 	}
 
 	private static JsonNode positionNodeOf(JsonNode obj) {

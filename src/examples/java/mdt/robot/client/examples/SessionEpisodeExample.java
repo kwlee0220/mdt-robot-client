@@ -3,6 +3,7 @@ package mdt.robot.client.examples;
 import java.util.List;
 import java.util.Map;
 
+import mdt.robot.client.operation.ClosedLoopCheck;
 import mdt.robot.client.operation.MoveToNamedTarget;
 import mdt.robot.client.OperationFailedException;
 import mdt.robot.client.Ops;
@@ -42,14 +43,14 @@ public final class SessionEpisodeExample {
 		}
 
 		// task_label 은 이 세션의 모든 에피소드에 박히며 나중에 고칠 수 없다.
-		twin.outputs("start_session", Map.of("task_label", taskLabel));
+		twin.runForOutputs("start_session", Map.of("task_label", taskLabel));
 		try {
-			twin.outputs("start_episode", Map.of());
+			twin.runForOutputs("start_episode", Map.of());
 			boolean success = false;
 			String error = null;
 			try {
 				// 에피소드 안의 작업 — 여기서는 ready 로 이동 하나.
-				MoveToNamedTarget.Check check = Ops.moveToNamedTargetVerified(twin, "ready");
+				ClosedLoopCheck check = Ops.moveToNamedTargetVerified(twin, "ready");
 				success = check.result().isCompleted();
 				error = success ? null : check.result().errorCode();
 			}
@@ -57,7 +58,7 @@ public final class SessionEpisodeExample {
 				error = e.getClass().getSimpleName() + ": " + e.getMessage();
 			}
 			// 실패해도 닫는다. metadata 는 이 에피소드의 재현 정보다.
-			twin.outputs("stop_episode", Map.of("outcome", success ? "success" : "failure",
+			twin.runForOutputs("stop_episode", Map.of("outcome", success ? "success" : "failure",
 												"metadata", error == null ? Map.of("note", "example")
 																		: Map.of("note", "example", "error", error)));
 			System.out.println("에피소드 기록: outcome=" + (success ? "success" : "failure"));

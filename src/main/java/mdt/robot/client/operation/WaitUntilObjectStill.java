@@ -32,8 +32,13 @@ import utils.Preconditions;
  * STALE은 정숙 구간을 초기화한다. 발행 중단이 있는 배포에서는 중단 시간과 재개 후 quiet,
  * 폴링·통신 여유를 포함해 timeout을 정한다. 백엔드 이름만으로 중단 주기를 가정하지 않는다.
  * <p>
- * 실행 중 cancel(true)는 관측 스레드를 인터럽트한다. STARTING 중 취소와 실행 후 cancel(false)는
- * 거부한다. 외부 인터럽트도 CANCELLED이며 run()은 플래그를 해제한 InterruptedException을 전달한다.
+ * <b>Isaac의 한계:</b> Isaac scene 노드는 주기마다 TF 버퍼의 최신 변환을 읽어 현재 시각으로 다시 발행하며
+ * 변환 자체의 시각은 보지 않는다. tf2는 새 변환이 들어올 때만 오래된 값을 지우므로, Isaac 쪽 TF가 멈추면
+ * 마지막 값이 새 received_at과 quality=OK로 계속 온다.
+ * 그러면 멈춘 값만으로 SETTLED가 된다. 클라이언트는 이를 실제로 멈춘 물체와 구분할 수 없다.
+ * <p>
+ * 실행 중 cancel(true)는 관측 스레드를 인터럽트한다. STARTING 중 cancel(true)는 기록되어 관측 전에 끝난다.
+ * 실행 후 cancel(false)는 거부한다. 외부 인터럽트도 CANCELLED이며 run()은 플래그를 해제한 InterruptedException을 전달한다.
  * 통신 오류는 FAILED/ExecutionException이다. HTTP 시간 초과는 관측 시간 초과와 구분한다.
  * 관측 상한·취소는 블로킹 HTTP의 즉시 종료를 보장하지 않는다. 종료 후에도 getProgress()로 기록을 읽는다.
  */
@@ -77,8 +82,9 @@ public final class WaitUntilObjectStill extends AbstractObservationOperation<Wai
 	}
 
 	/** sample은 마지막 유효 응답 전체이며 읽기 전용이다. 취소·실패 시에도 getProgress()로 조회한다. */
-	public record Result(String objectName, Outcome outcome, Optional<JsonNode> sample, Duration elapsed, Diagnostics diagnostics) {
-		public boolean settled() { return outcome == Outcome.SETTLED; }
+	public record Result(String objectName, Outcome outcome, Optional<JsonNode> sample, Duration elapsed, Diagnostics diagnostics) implements StepVerdict {
+		@Override public boolean goalReached() { return outcome == Outcome.SETTLED; }
+		@Override public @Nullable String failureReason() { return goalReached() ? null : "물체 정착 확인 불가: " + summary(); }
 		public Optional<JsonNode> object() { return sample.map(body -> body.path("value").path("objects").get(objectName)); }
 		public String summary() {
 			return outcome + ": " + objectName + ", 유효 표본 " + diagnostics.validSamples() + "건, 새 표본 "

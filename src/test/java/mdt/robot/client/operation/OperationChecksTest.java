@@ -26,12 +26,12 @@ class OperationChecksTest {
 	void namedAndJointOperationsShareClosedLoopJudgment(String value) throws Exception {
 		Map<String,JsonNode> outputs = value.equals("missing") ? Map.of()
 				: Map.of("closed_loop", JsonMapper.builder().build().readTree(value));
-		OperationResult result = new OperationResult("test", "COMPLETED", outputs, null, null);
-		MoveToNamedTarget.Check named = new MoveToNamedTarget(m_twin, "ready").convertResult(result);
-		MoveToJoints.Check joints = new MoveToJoints(m_twin, Map.of("joint_a", 0.0)).convertResult(result);
-		assertEquals(value.equals("true"), joints.reached());
-		assertEquals(named.reached(), joints.reached());
-		assertEquals(named.why(), joints.why());
+		OperationResult result = new OperationResult("test", OperationResult.Status.COMPLETED, outputs, null, null);
+		ClosedLoopCheck named = new MoveToNamedTarget(m_twin, "ready").judgeResult(result);
+		ClosedLoopCheck joints = new MoveToJoints(m_twin, Map.of("joint_a", 0.0)).judgeResult(result);
+		assertEquals(value.equals("true"), joints.goalReached());
+		assertEquals(named.goalReached(), joints.goalReached());
+		assertEquals(named.failureReason(), joints.failureReason());
 		assertSame(result, named.result());
 		assertSame(result, joints.result());
 	}
@@ -39,16 +39,16 @@ class OperationChecksTest {
 	@ParameterizedTest
 	@MethodSource("failures")
 	void failureGuidanceUsesCodeThenMessageThenStatus(String status, String code, String message, String expected) {
-		OperationResult result = new OperationResult("test", status, Map.of(), code, message);
-		MoveToNamedTarget.Check named = new MoveToNamedTarget(m_twin, "ready").convertResult(result);
-		MoveToJoints.Check joints = new MoveToJoints(m_twin, Map.of("joint_a", 0.0)).convertResult(result);
-		GripperCheck gripper = new MoveGripperToNamedTarget(m_twin, "open").convertResult(result);
-		assertFalse(named.reached());
-		assertFalse(joints.reached());
-		assertFalse(gripper.atGoal());
-		assertEquals(expected, named.why());
-		assertEquals(expected, joints.why());
-		assertEquals(expected, gripper.why());
+		OperationResult result = new OperationResult("test", OperationResult.Status.valueOf(status), Map.of(), code, message);
+		ClosedLoopCheck named = new MoveToNamedTarget(m_twin, "ready").judgeResult(result);
+		ClosedLoopCheck joints = new MoveToJoints(m_twin, Map.of("joint_a", 0.0)).judgeResult(result);
+		GripperCheck gripper = new MoveGripperToNamedTarget(m_twin, "open").judgeResult(result);
+		assertFalse(named.goalReached());
+		assertFalse(joints.goalReached());
+		assertFalse(gripper.goalReached());
+		assertEquals(expected, named.failureReason());
+		assertEquals(expected, joints.failureReason());
+		assertEquals(expected, gripper.failureReason());
 	}
 
 	private static Stream<Arguments> failures() {
@@ -63,9 +63,9 @@ class OperationChecksTest {
 
 	@Test
 	void jointGroupHintIsSpecificToJointPlanningFailure() {
-		OperationResult result = new OperationResult("test", "FAILED", Map.of(), "PLANNING_FAILED", "no plan");
-		String named = new MoveToNamedTarget(m_twin, "ready").convertResult(result).why();
-		String joints = new MoveToJoints(m_twin, Map.of("joint_a", 0.0)).convertResult(result).why();
+		OperationResult result = new OperationResult("test", OperationResult.Status.FAILED, Map.of(), "PLANNING_FAILED", "no plan");
+		String named = new MoveToNamedTarget(m_twin, "ready").judgeResult(result).failureReason();
+		String joints = new MoveToJoints(m_twin, Map.of("joint_a", 0.0)).judgeResult(result).failureReason();
 		assertEquals(Ops.FAILURE_HINTS.get("PLANNING_FAILED"), named);
 		assertTrue(joints.startsWith(named));
 		assertTrue(joints.contains("이동 그룹"));

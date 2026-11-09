@@ -66,7 +66,7 @@ class MoveGripperToNamedTargetTest {
 		Map<String,JsonNode> outputs = check.result().outputs();
 		assertTrue(move.isCompleted(), "at_goal=false is not an execution failure");
 		assertEquals(atGoal, outputs.get("at_goal").booleanValue());
-		assertEquals(atGoal, check.atGoal());
+		assertEquals(atGoal, check.goalReached());
 		assertEquals(!atGoal, check.stalled());
 		assertFalse(outputs.containsKey("reached_goal"));
 		assertEquals(!atGoal, outputs.get("stalled").booleanValue());
@@ -106,9 +106,9 @@ class MoveGripperToNamedTargetTest {
 		MoveGripperToNamedTarget move = new MoveGripperToNamedTarget(m_server.client(), "grasp");
 		GripperCheck check = move.run();
 		assertTrue(move.isCompleted());
-		assertFalse(check.atGoal());
-		assertNotNull(check.why());
-		assertEquals(status, check.result().status());
+		assertFalse(check.goalReached());
+		assertNotNull(check.failureReason());
+		assertEquals(status, check.result().status().name());
 		assertSame(check.result(), move.getRemoteResult().orElseThrow());
 		if ( status.equals("FAILED") ) { assertEquals("TIMEOUT", check.result().errorCode()); }
 	}
@@ -143,11 +143,10 @@ class MoveGripperToNamedTargetTest {
 		operation.start();
 		assertThrows(IllegalStateException.class, operation::start);
 		assertThrows(IllegalStateException.class, move::run);
-		assertFalse(operation.cancel(true));
 		assertEquals(1, queued.size());
 		assertTrue(m_server.requests.isEmpty());
 		queued.get(0).run();
-		assertTrue(operation.get().atGoal());
+		assertTrue(operation.get().goalReached());
 		assertThrows(IllegalStateException.class, move::run);
 		assertEquals(1, m_server.requests("POST " + MOVE).size());
 		assertEquals("half_open", JsonMapper.builder().build().readTree(body.get()).at("/inputs/target").asText());
@@ -190,7 +189,7 @@ class MoveGripperToNamedTargetTest {
 		}
 		finally {
 			release.countDown();
-			assertTrue(move.get(3, TimeUnit.SECONDS).atGoal());
+			assertTrue(move.get(3, TimeUnit.SECONDS).goalReached());
 		}
 		assertTrue(move.isCompleted());
 		assertTrue(m_server.requests("DELETE").isEmpty());
@@ -204,7 +203,7 @@ class MoveGripperToNamedTargetTest {
 				Map.of("status", "RUNNING", "session_endpoint", FakeTwinServer.BASE + session)));
 		m_server.on("GET", session, req -> completed(Map.of("at_goal", true)));
 		MoveGripperToNamedTarget move = new MoveGripperToNamedTarget(m_server.client(), "open", Duration.ofSeconds(3));
-		assertTrue(move.run().atGoal());
+		assertTrue(move.run().goalReached());
 		assertEquals(1, m_server.requests("POST " + MOVE).size());
 		assertFalse(m_server.requests("GET " + session).isEmpty());
 		assertTrue(move.getRemoteResult().orElseThrow().isCompleted());
@@ -237,15 +236,15 @@ class MoveGripperToNamedTargetTest {
 				.setBody("{\"status\":\"COMPLETED\",\"outputs\":{" +
 						(value.equals("missing") ? "" : "\"at_goal\":" + value + ",") + "\"stalled\":true}}"));
 		GripperCheck check = new MoveGripperToNamedTarget(m_server.client(), "grasp").run();
-		assertEquals(value.equals("true"), check.atGoal());
+		assertEquals(value.equals("true"), check.goalReached());
 		assertTrue(check.stalled());
 		assertFalse(check.result().outputs().containsKey("reached_goal"));
-		if ( value.equals("true") ) { assertNull(check.why()); }
-		else if ( value.equals("false") ) { assertTrue(check.why().contains("at_goal=false")); }
+		if ( value.equals("true") ) { assertNull(check.failureReason()); }
+		else if ( value.equals("false") ) { assertTrue(check.failureReason().contains("at_goal=false")); }
 		else if ( value.equals("null") || value.equals("missing") ) {
-			assertTrue(check.why().contains("정보 없음"));
+			assertTrue(check.failureReason().contains("정보 없음"));
 		}
-		else { assertTrue(check.why().contains("받은 값: " + value)); }
+		else { assertTrue(check.failureReason().contains("받은 값: " + value)); }
 	}
 
 	@ParameterizedTest
@@ -255,7 +254,7 @@ class MoveGripperToNamedTargetTest {
 				.setBody("{\"status\":\"COMPLETED\",\"outputs\":{\"at_goal\":true" +
 						(value.equals("missing") ? "" : ",\"stalled\":" + value) + "}}"));
 		GripperCheck check = new MoveGripperToNamedTarget(m_server.client(), "open").run();
-		assertTrue(check.atGoal());
+		assertTrue(check.goalReached());
 		assertFalse(check.stalled());
 	}
 

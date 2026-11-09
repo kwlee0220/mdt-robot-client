@@ -81,7 +81,7 @@ class ObservationOperationTest {
 			WaitForFreshVariable operation = new WaitForFreshVariable(server.client(), "scene_objects",
 					new WaitForFreshVariable.Options(2, Duration.ofSeconds(3), Duration.ofMillis(5)));
 			var result = operation.run();
-			assertTrue(result.fresh());
+			assertTrue(result.goalReached());
 			assertSame(result.diagnostics(), operation.getProgress());
 			ObservationDiagnostics<?> counts = operation.getDiagnostics();
 			assertEquals(7, counts.reads());
@@ -109,7 +109,7 @@ class ObservationOperationTest {
 	private static AbstractObservationOperation<?,?> operation(String kind, RobotTwinClient twin) {
 		Duration timeout = Duration.ofSeconds(5), quiet = Duration.ofSeconds(10), poll = Duration.ofMillis(5);
 		return switch (kind) {
-			case "ee" -> new WaitUntilStill(twin, new WaitUntilStill.Options(timeout, 0.0002, quiet, poll));
+			case "ee" -> new WaitUntilArmStill(twin, new WaitUntilArmStill.Options(timeout, 0.0002, quiet, poll));
 			case "object" -> new WaitUntilObjectStill(twin, "peg",
 					new WaitUntilObjectStill.Options(timeout, 0.0002, 0.01, quiet, poll));
 			default -> new WaitForFreshVariable(twin, "scene_objects", new WaitForFreshVariable.Options(100, timeout, poll));

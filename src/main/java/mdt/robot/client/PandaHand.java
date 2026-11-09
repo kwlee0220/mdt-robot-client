@@ -65,4 +65,20 @@ public final class PandaHand {
 		Position p = armPose.position();
 		return new Pose(new Position(p.x() + o[0], p.y() + o[1], p.z() + o[2]), q);
 	}
+
+	/**
+	 * 팔이 보고한 pose({@code ee_pose} / {@code outputs.final_pose}, {@code panda_hand} 기준)를 그 자세로 다시
+	 * 명령할 <b>{@code panda_link8} 기준</b> pose 로 바꾼다.
+	 * <p>
+	 * 두 프레임의 위치는 같으므로 위치는 그대로 두고, 자세에 로컬 z축 +45° 를 곱한다.
+	 * {@code toArmCommand(tcpFromArmPose(armPose))}와 같다. 관측한 pose 를 조금 옮겨 다시 명령할 때
+	 * (예: 현재 자리에서 위로 5 cm) 이 변환을 빼면 명령마다 손목이 45° 씩 돈다. 위치만 비교하는 도달 판정은
+	 * 이 회전을 잡지 못한다.
+	 *
+	 * @param armPose	팔이 보고한 pose.
+	 * @return	같은 손 자세를 만드는 {@code panda_link8} 기준 명령.
+	 */
+	public static Pose armCommandFromArmPose(Pose armPose) {
+		return new Pose(armPose.position(), armPose.orientation().multiply(Quaternion.aboutZ(HAND_YAW_RAD)));
+	}
 }

@@ -56,8 +56,8 @@ class ResetSceneTest {
 		assertTrue(m_server.requests.isEmpty());
 		assertTrue(reset.getRemoteResult().isEmpty());
 		ResetScene.Check check = reset.run();
-		assertTrue(check.applied());
-		assertNull(check.why());
+		assertTrue(check.goalReached());
+		assertNull(check.failureReason());
 		assertTrue(reset.isCompleted());
 		assertSame(check.result(), reset.getRemoteResult().orElseThrow());
 		assertEquals(JsonMapper.builder().build().readTree(outputs),
@@ -76,7 +76,7 @@ class ResetSceneTest {
 	void emptySceneIsAValidReset() throws Exception {
 		m_server.on("POST", RESET, req -> completed("{\"objects\":[],\"applied_count\":0}"));
 		ResetScene.Check check = new ResetScene(m_server.client(), "empty").run();
-		assertTrue(check.applied());
+		assertTrue(check.goalReached());
 		assertTrue(check.result().output("objects").isEmpty());
 	}
 
@@ -91,8 +91,8 @@ class ResetSceneTest {
 				+ (objects.equals("missing") ? "" : ",\"objects\":" + objects) + "}"));
 		ResetScene reset = new ResetScene(m_server.client(), "scene");
 		ResetScene.Check check = reset.run();
-		assertFalse(check.applied());
-		assertNotNull(check.why());
+		assertFalse(check.goalReached());
+		assertNotNull(check.failureReason());
 		assertTrue(reset.isCompleted());
 		assertTrue(check.result().isCompleted(), "remote completion is independent from placement validity");
 		assertSame(check.result(), reset.getRemoteResult().orElseThrow());
@@ -102,8 +102,8 @@ class ResetSceneTest {
 	void duplicateNamesAreNotAUsablePlacement() throws Exception {
 		m_server.on("POST", RESET, req -> completed("{\"objects\":[" + OBJECT + "," + OBJECT + "],\"applied_count\":2}"));
 		ResetScene.Check check = new ResetScene(m_server.client(), "scene").run();
-		assertFalse(check.applied());
-		assertTrue(check.why().contains("중복 물체 이름"));
+		assertFalse(check.goalReached());
+		assertTrue(check.failureReason().contains("중복 물체 이름"));
 		assertEquals(2, check.result().output("objects").size());
 	}
 
@@ -114,8 +114,8 @@ class ResetSceneTest {
 				+ (count.equals("missing") ? "" : ",\"applied_count\":" + count) + "}"));
 		ResetScene reset = new ResetScene(m_server.client(), "scene");
 		ResetScene.Check check = reset.run();
-		assertFalse(check.applied());
-		assertTrue(check.why().contains("applied_count"));
+		assertFalse(check.goalReached());
+		assertTrue(check.failureReason().contains("applied_count"));
 		assertTrue(reset.isCompleted());
 	}
 
@@ -127,9 +127,9 @@ class ResetSceneTest {
 		ResetScene reset = new ResetScene(m_server.client(), "scene");
 		reset.start();
 		ResetScene.Check check = reset.get(3, TimeUnit.SECONDS);
-		assertFalse(check.applied());
-		assertNotNull(check.why());
-		assertEquals(status, check.result().status());
+		assertFalse(check.goalReached());
+		assertNotNull(check.failureReason());
+		assertEquals(status, check.result().status().name());
 		assertSame(check.result(), reset.getRemoteResult().orElseThrow());
 		assertTrue(reset.isCompleted());
 	}
@@ -161,10 +161,9 @@ class ResetSceneTest {
 		reset.start();
 		assertThrows(IllegalStateException.class, reset::start);
 		assertThrows(IllegalStateException.class, reset::run);
-		assertFalse(reset.cancel(true));
 		assertEquals(1, queued.size());
 		queued.get(0).run();
-		assertTrue(reset.get().applied());
+		assertTrue(reset.get().goalReached());
 		assertEquals(1, m_server.requests("POST " + RESET).size());
 	}
 
@@ -187,7 +186,7 @@ class ResetSceneTest {
 			assertFalse(reset.isDone());
 		}
 		finally { release.countDown(); }
-		assertTrue(reset.get(3, TimeUnit.SECONDS).applied());
+		assertTrue(reset.get(3, TimeUnit.SECONDS).goalReached());
 		assertTrue(m_server.requests("DELETE").isEmpty());
 	}
 
@@ -199,7 +198,7 @@ class ResetSceneTest {
 				Map.of("status", "RUNNING", "session_endpoint", FakeTwinServer.BASE + session)));
 		m_server.on("GET", session, req -> completed("{\"objects\":[],\"applied_count\":0}"));
 		ResetScene reset = new ResetScene(m_server.client(), "scene", null, Duration.ofSeconds(2));
-		assertTrue(reset.run().applied());
+		assertTrue(reset.run().goalReached());
 		assertFalse(m_server.requests("GET " + session).isEmpty());
 	}
 
@@ -235,11 +234,11 @@ class ResetSceneTest {
 		ResetScene reset = new ResetScene(m_server.client(), "scene", null, Duration.ofSeconds(2),
 				new WaitForFreshVariable.Options(2, Duration.ofMillis(250), Duration.ofMillis(5)));
 		ResetScene.Check check = reset.run();
-		assertTrue(check.applied());
-		assertNull(check.why());
+		assertTrue(check.goalReached());
+		assertNull(check.failureReason());
 		assertTrue(reset.isCompleted());
 		WaitForFreshVariable.Result observation = check.observation().orElseThrow();
-		assertEquals(mode.equals("fresh"), observation.fresh());
+		assertEquals(mode.equals("fresh"), observation.goalReached());
 		if ( mode.equals("fresh") ) {
 			assertEquals(3, reads.get());
 			assertEquals(3, observation.sample().orElseThrow().at("/value/revision").asInt());
@@ -258,7 +257,7 @@ class ResetSceneTest {
 				: completed("{\"objects\":[],\"applied_count\":1}"));
 		ResetScene.Check check = new ResetScene(m_server.client(), "scene", null, Duration.ofSeconds(2),
 				WaitForFreshVariable.Options.DEFAULT).run();
-		assertFalse(check.applied());
+		assertFalse(check.goalReached());
 		assertTrue(check.observation().isEmpty());
 		assertTrue(m_server.requests("GET /variables").isEmpty());
 	}

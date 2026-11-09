@@ -12,7 +12,7 @@ import utils.async.AsyncState;
  * 로컬 관측의 실행·취소 수명주기와 스냅샷 게시. 원격 POST/DELETE를 수행하지 않는다.
  * <p>
  * 실행 중 cancel(true)는 작업 스레드를 인터럽트하고 종료까지 CANCELLING을 유지한다.
- * STARTING 중 취소와 실행 중 cancel(false)는 거부한다. 접수된 취소는 결과/실패보다 우선한다.
+ * STARTING 중 cancel(true)는 기록해 관측 전에 끝내고, 실행 중 cancel(false)는 거부한다. 접수된 취소는 결과/실패보다 우선한다.
  * 결과 확정 또는 실패 시 작업 스레드를 분리하여 뒤늦은 취소가 다음 작업을 인터럽트하지 않게 한다.
  * 외부 인터럽트는 run()에서 InterruptedException, start()/get()에서 CancellationException이다.
  * HTTP의 즉시 중단은 보장하지 않는다. HTTP 시간 초과와 진짜 인터럽트의 구분은 RobotTwinClient가 맡는다.
@@ -49,12 +49,14 @@ public abstract class AbstractObservationOperation<R,P> extends AbstractThreaded
 				return super.cancel(interrupt);
 			}
 			if ( isCancelled() ) { return true; }
-			if ( !interrupt || isDone() || getState() == AsyncState.STARTING ) { return false; }
+			if ( !interrupt || isDone() ) { return false; }
 			if ( m_cancelRequested ) { return true; }
-			if ( m_worker == null ) { return false; }
+			// 시작 직후(STARTING)나 관측 스레드가 자리 잡기 전이면 기록만 한다. executeWork()가 관측을 시작하기
+			// 전에 확인하고 취소로 끝낸다.
 			m_cancelRequested = true;
+			if ( getState() == AsyncState.STARTING ) { return true; }
 			notifyCancelling();
-			m_worker.interrupt();
+			if ( m_worker != null ) { m_worker.interrupt(); }
 			return true;
 		}
 		finally { m_aopGuard.unlock(); }

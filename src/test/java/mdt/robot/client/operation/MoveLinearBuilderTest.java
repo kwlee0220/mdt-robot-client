@@ -40,7 +40,7 @@ class MoveLinearBuilderTest {
             MoveLinear operation = builder.build();
             builder.maxDuration(Duration.ofSeconds(2)).velocityScaling(0.5);
             assertTrue(server.requests.isEmpty());
-            assertTrue(operation.run().reached());
+            assertTrue(operation.run().goalReached());
             JsonNode inputs = JSON.readTree(request.get()).path("inputs");
             assertEquals(TARGET, Pose.fromJson(inputs.path("pose")));
             assertFalse(inputs.has("velocity_scaling"));
@@ -71,9 +71,9 @@ class MoveLinearBuilderTest {
             MoveCheck result = MoveLinear.builder(server.client(), TARGET)
                     .settleTimeout(Duration.ofMillis(100)).build().run();
             boolean closed = closedLoop.equals("true");
-            assertEquals(closed, result.reached());
+            assertEquals(closed, result.goalReached());
             assertEquals(closed, server.requests("GET /variables/ee_pose").isEmpty());
-            if (!closed) { assertEquals(MoveCheck.SETTLE_TIMEOUT, result.reason()); }
+            if (!closed) { assertEquals(MoveCheck.SETTLE_TIMEOUT, result.failureCode()); }
         }
     }
 
@@ -85,7 +85,7 @@ class MoveLinearBuilderTest {
             server.on("GET", "/variables/ee_pose", r -> FakeTwinServer.json(200, Map.of("quality", "NO_DATA")));
             MoveCheck check = new MoveLinear(server.client(), TARGET,
                     MoveLinear.Options.DEFAULT.withSettleTimeout(Duration.ofMillis(100))).run();
-            assertTrue(check.reached());
+            assertTrue(check.goalReached());
             assertNull(check.settledPose());
             assertTrue(server.requests("GET /variables/ee_pose").isEmpty());
         }
@@ -95,7 +95,7 @@ class MoveLinearBuilderTest {
     void invalidBuilderSettingsAreRejectedBeforeAnyRequest() throws Exception {
         try (FakeTwinServer server = new FakeTwinServer()) {
             List<Consumer<MoveLinear.Builder>> invalid = List.of(
-                    b -> b.tolerance(Double.NaN), b -> b.tolerance(-1),
+                    b -> b.positionToleranceM(Double.NaN), b -> b.positionToleranceM(-1),
                     b -> b.velocityScaling(Double.POSITIVE_INFINITY), b -> b.velocityScaling(0.0),
                     b -> b.velocityScaling(1.1),
                     b -> b.maxDuration(Duration.ZERO), b -> b.timeout(Duration.ZERO),

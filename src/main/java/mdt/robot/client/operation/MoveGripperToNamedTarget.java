@@ -1,5 +1,7 @@
 package mdt.robot.client.operation;
 
+import static mdt.robot.client.operation.OperationInputs.defaultTimeout;
+
 import java.time.Duration;
 import java.util.Map;
 
@@ -19,7 +21,7 @@ import utils.Preconditions;
  * <p>
  * 서버 COMPLETED와 JSON Boolean at_goal=true인 경우만 목표 달성으로 인정한다.
  * stalled는 관측값이며 성공 판정에 사용하지 않는다. 서버 FAILED/CANCELLED와 목표 달성 확인 불가는
- * atGoal=false 결과로 정상 완료한다. 접수 거부·통신 오류는 ExecutionException의 원인으로 전달한다.
+ * goalReached=false 결과로 정상 완료한다. 접수 거부·통신 오류는 ExecutionException의 원인으로 전달한다.
  * 직접 요청한 취소가 접수된 경우의 로컬 CANCELLED 계약은 공통 실행부를 따른다.
  */
 public final class MoveGripperToNamedTarget extends AbstractRobotTwinOperation<GripperCheck> {
@@ -52,7 +54,7 @@ public final class MoveGripperToNamedTarget extends AbstractRobotTwinOperation<G
 	}
 
 	@Override
-	protected GripperCheck convertResult(OperationResult result) {
+	protected GripperCheck judgeResult(OperationResult result) {
 		JsonNode stalledNode = result.output("stalled");
 		boolean stalled = stalledNode != null && stalledNode.isBoolean() && stalledNode.booleanValue();
 		if ( !result.isCompleted() ) {
