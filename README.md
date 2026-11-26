@@ -286,6 +286,7 @@ for ( Map.Entry<String, JsonNode> entry : samples.entrySet() ) {
 | 열기 → 접근 → 하강 → 파지 목표 확인 | [Grasp](#610-grasp-조합-연산-객체) | `Check.goalReached()`, `graspAttempted()` |
 | Grasp + 들어 올리기, 선택적 유지 확인 | [Pick](#611-pick-조합-연산-객체) | `Check.goalReached()`, `holdVerdict()`, `hold()` |
 | 접근 → 하강 → 개방 → 후퇴 | [Place](#612-place-조합-연산-객체) | `Check.goalReached()`, `releaseConfirmed()`, `retreatReached()` |
+| 쥔 원기둥의 바닥점을 입구 수평 위치에 맞추기 | [AlignHeldObject](#615-alignheldobject-물체-정렬) | `Check.goalReached()`, `stopReason()`, `errorM()` |
 
 `Grasp`는 물체를 잡는 단계까지 수행한다. 들어 올리기까지 한 번에 하려면 `Pick`을 쓴다.
 `Place`는 그리퍼를 연 뒤 바로 후퇴하므로, 물체가 안정적으로 놓였는지 확인하려면 추가 관측이 필요하다.
