@@ -24,7 +24,7 @@ HTTP 통신에는 `utils.rpc.restful`을, 실행 상태 관리와 비동기 결�
 - [7. 예제 프로그램](#7-예제-프로그램)
 - [8. 구성과 핵심 API](#8-구성과-핵심-api) — [주요 메소드 시그니처](#83-주요-메소드-참조)
 - [9. 저수준 연산 호출](#9-저수준-연산-호출) · [10. 좌표 규약](#10-좌표-규약)
-- [11. 테스트](#11-테스트) · [12. 참고](#12-참고)
+- [11. 테스트](#11-테스트) · [12. 참고](#12-참고) — [Python 함수 대응](#121-python-robot-twin-client-함수와의-대응)
 
 처음 사용한다면 1~5절을 읽고 필요한 연산을 6절에서 선택한다. 메소드의 인자와 반환 타입은
 8.3절에서 확인한다. 예제의 위치·자세·물체 이름은 설명용이며, 실제 배포의 좌표계와 작업에 맞춰 지정한다.
@@ -2089,3 +2089,34 @@ gradle :compileExamplesJava  # 예제 컴파일 확인
 - [Python RobotTwinClient 가이드](../../mdtpy/robot-twin-client/docs/RobotTwinClient_가이드.md)
 - [로봇 트윈 사용자 가이드](../../ros/rdfp_ws/docs/twin/로봇_트윈_사용자_가이드.md)
 - [`utils.rpc.restful` 구현 안내](../../common/utils/src/main/java/utils/rpc/restful/CLAUDE.md)
+
+### 12.1. Python robot-twin-client 함수와의 대응
+
+이 라이브러리의 연산은 Python `robot-twin-client`의 함수를 바탕으로 만들었지만, 한 함수를 그대로 옮긴 경우는 적다.
+Python의 작업 스크립트(`pick_n_place.py`, `stack.py`, `peg_in_hole.py`) 안에 있는 단계를 범용 연산 객체로
+분리했다. Python 경로는 `robot_twin_client` 패키지 기준이다.
+
+| Java 연산 | Python 함수 | 차이 |
+|---|---|---|
+| `MoveLinear` | `ops.move_linear_verified()` | Python은 이동 뒤 정착 대기까지 포함한다. Java는 이동과 위치 판정(`MoveCheck`)만 하며, 정착은 `WaitUntilArmStill`로 확인한다. |
+| `MoveToNamedTarget` | `ops.move_to_named_target_verified()` | `Ops.moveToNamedTargetVerified()`도 제공한다. |
+| `MoveToJoints` | 없음 | Python에서는 `twin.run()`으로 서버 연산을 직접 호출한다. |
+| `MoveGripperToNamedTarget` | `ops.set_gripper()` | 판정에 `at_goal`을 사용한다. |
+| `ResetScene` | `stack.reset_scene()` | Python은 재배치 뒤 항상 `await_fresh_scene()`을 호출한다. Java의 갱신 관측은 선택 사항(`observation()`)이다. |
+| `WaitForFreshVariable` | `stack.await_fresh_scene()` | Python은 `scene_objects`만 보며 시각이 없으면 바로 성공으로 본다. Java는 대상 변수를 지정하고, `quality=OK`를 요구하며, 시각 역행 시 구간을 다시 시작하고, 시각이 없으면 실패로 판정한다. |
+| `WaitUntilArmStill` | `ops.wait_until_still()` | 판정 기준(`ee_pose` 0.2 mm, 0.6초)이 같다. Java는 결과를 `Result`의 `pose()`, `summary()`로 제공한다. |
+| `WaitUntilObjectStill` | `peg_in_hole.wait_until_peg_still()` | Python은 peg 바닥점만 보고, 정착하지 않아도 마지막 관측을 반환한다. Java는 지정한 물체의 위치와 회전을 보고 `goalReached()`로 판정한다. |
+| `MeasureObjectOffset` | `stack.held_offset()` | **부호가 반대다.** Python은 `도구 기준점 − 물체 중심`, Java는 `물체 중심 − 도구 기준점`이다. Z 성분은 Python peg 코드의 gap과 같은 부호다. |
+| `Grasp` | `pick_n_place.pick()`의 열기 → 접근 → 하강 → 파지 | Python에는 이 부분만 담당하는 함수가 없다. 파지 판정에 Python은 `stalled`, Java는 `at_goal`을 사용한다. |
+| `Pick` | `pick_n_place.pick()` 전체 | Java는 들어 올린 뒤 물체가 함께 올라왔는지 장면 관측으로 확인하는 `HoldCheck`를 제공한다. Python의 `require_grasp=False`(mock 백엔드용)에 해당하는 옵션은 없다. |
+| `Place` | `pick_n_place.place()` | 단계(접근 → 하강 → 열기 → 상승)가 같고, 둘 다 대기 자세로 복귀하지 않는다. |
+| `AlignHeldObject` | `peg_in_hole._align_bottom_over()` | 기본값(3회, 속도 0.15, 위치 허용 5 mm, 이동 정착 15초)이 같다. Python은 정착을 확인하지 못해도 마지막 관측으로 계속하지만, Java는 `STEP_FAILED`로 끝낸다. |
+
+Python의 다음 기능에는 대응하는 Java 연산이 없다.
+
+- 작업 절차: `stack.stack()`·`repeat_stack()`·`verify_stacked()`, `peg_in_hole.pick_peg()`·`place_peg()`·`move_peg()`,
+  `pick_n_place.reset_and_pick_and_place()`·`return_home()`. 연산을 조합해 구현한다.
+- 데이터 수집(`collect.py`): `RobotTwinClient.run()`으로 서버의 세션·에피소드 연산을 호출한다(`SessionEpisodeExample` 참고).
+- MCP 서버(`mcp_server.py`): 이 라이브러리의 제공 범위가 아니다.
+
+`geometry.py`, `panda_hand.py`의 좌표 계산은 연산이 아니라 `Geometry`, `PandaHand` 클래스에 해당한다.
