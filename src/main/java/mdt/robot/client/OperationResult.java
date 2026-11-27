@@ -1,6 +1,7 @@
 package mdt.robot.client;
 
 import java.util.Map;
+import java.util.Optional;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -19,11 +20,13 @@ import mdt.robot.client.operation.MoveCheck;
  * @param outputs		연산 출력. 없으면 빈 맵.
  * @param errorCode		실패 코드. (예: {@code PLANNING_FAILED}, {@code TIMEOUT}) 실패가 아니면 {@code null}.
  * @param errorMessage	실패 사유. 실패가 아니면 {@code null}.
+ * @param errorDetails	트윈이 {@code error.details}에 실은 구조화된 원인(예: MoveIt 원본 오류 코드). 없으면 {@code null}.
  *
  * @author Kang-Woo Lee (ETRI)
  */
 public record OperationResult(String operation, Status status, Map<String,JsonNode> outputs,
-								@Nullable String errorCode, @Nullable String errorMessage) {
+								@Nullable String errorCode, @Nullable String errorMessage,
+								@Nullable JsonNode errorDetails) {
 	/**
 	 * 원격 연산의 종료 상태.
 	 */
@@ -38,6 +41,39 @@ public record OperationResult(String operation, Status status, Map<String,JsonNo
 
 	public OperationResult {
 		outputs = (outputs != null) ? Map.copyOf(outputs) : Map.of();
+		if ( errorDetails != null && (errorDetails.isNull() || errorDetails.isMissingNode()) ) {
+			errorDetails = null;
+		}
+	}
+
+	/** 구조화된 원인({@code error.details}) 없이 만든다. */
+	public OperationResult(String operation, Status status, Map<String,JsonNode> outputs,
+							@Nullable String errorCode, @Nullable String errorMessage) {
+		this(operation, status, outputs, errorCode, errorMessage, null);
+	}
+
+	/**
+	 * MoveIt 원본 오류 이름을 반환한다 (트윈 설계서 6.8 — {@code error.details.moveit_error_name}).
+	 * <p>
+	 * 트윈은 MoveIt 이 코드를 준 실패에만 이 값을 싣는다. {@code PLANNING_FAILED} 하나로는 충돌 · IK 실패 · 시작 자세
+	 * 무효가 같아 보이는데 대응은 다르므로, 원인별로 분기할 때 쓴다.
+	 *
+	 * @return	이름(예: {@code GOAL_IN_COLLISION}). 이름 없이 코드만 있으면 {@code error_code=<값>}.
+	 *			원인이 없으면 {@link Optional#empty()}.
+	 */
+	public Optional<String> moveitErrorName() {
+		if ( errorDetails == null || !errorDetails.isObject() ) {
+			return Optional.empty();
+		}
+		JsonNode name = errorDetails.get("moveit_error_name");
+		if ( name != null && name.isTextual() && !name.asText().isEmpty() ) {
+			return Optional.of(name.asText());
+		}
+		JsonNode code = errorDetails.get("moveit_error_code");
+		if ( code != null && code.isIntegralNumber() ) {
+			return Optional.of("error_code=" + code.asLong());
+		}
+		return Optional.empty();
 	}
 
 	/**

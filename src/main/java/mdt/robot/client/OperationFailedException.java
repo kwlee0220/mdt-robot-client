@@ -15,10 +15,17 @@ public class OperationFailedException extends RuntimeException {
 	private final transient OperationResult m_result;
 
 	public OperationFailedException(OperationResult result) {
-		super(String.format("'%s' %s: %s%s", result.operation(), result.status(),
-							result.errorCode() != null ? result.errorCode() + ": " : "",
+		super(String.format("'%s' %s: %s%s", result.operation(), result.status(), codePrefix(result),
 							result.errorMessage() != null ? result.errorMessage() : "the twin gave no reason"));
 		m_result = result;
+	}
+
+	/** {@code PLANNING_FAILED(GOAL_IN_COLLISION): } 처럼 코드와 MoveIt 원인을 붙인 머리말. 둘 다 없으면 빈 문자열. */
+	private static String codePrefix(OperationResult result) {
+		String code = (result.errorCode() != null) ? result.errorCode() : "";
+		String moveit = result.moveitErrorName().map(name -> "(" + name + ")").orElse("");
+		String prefix = code + moveit;
+		return prefix.isEmpty() ? "" : prefix + ": ";
 	}
 
 	/**

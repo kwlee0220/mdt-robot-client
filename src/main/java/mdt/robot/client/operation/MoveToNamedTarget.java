@@ -15,14 +15,17 @@ import mdt.robot.client.RobotTwinClient;
 import utils.Preconditions;
 
 /**
- * SRDF에 정의된 이름 자세로 이동하고 서버의 closed_loop 결과로 도달을 판정한다.
+ * SRDF에 정의된 이름 자세로 이동하고 도달을 판정한다.
+ * <p>
+ * {@link MotionLimits#settleTimeout()}이 양수이고 트윈이 {@code settle_timeout_sec}를 받으면 트윈이 정착을 기다린 뒤
+ * 돌려준 관절 최대 오차로 판정한다({@link ClosedLoopCheck}). 그 밖에는 아래의 closed_loop 규칙을 따른다.
  * <p>
  * run()은 동기 실행, start()/get()은 비동기 실행이다. 생성자는 통신하지 않으며 한 번만 실행한다.
  * 원격 결과 대기 상한과 세션 취소는 {@link AbstractRobotTwinOperation}의 계약을 따른다.
  * <p>
  * 서버 연산이 COMPLETED이고 closed_loop가 JSON Boolean true인 경우에만 goalReached=true다.
  * 개루프·정보 누락·형식 오류의 goalReached=false는 도달 확인 불가이며 미도달이 확정됐다는 뜻이 아니다.
- * 별도의 관측이나 정착 검증은 수행하지 않는다.
+ * 클라이언트가 직접 관측하거나 정착을 확인하지는 않는다.
  * 서버의 FAILED/CANCELLED는 goalReached=false 결과로 정상 완료한다.
  * 없는 이름 등 접수 거부는 실행 실패이며 run()/get()의 ExecutionException에 원인이 담긴다.
  * 기존 {@link Ops#moveToNamedTargetVerified}는 이 클래스를 호출하는 호환 API다.
@@ -31,6 +34,10 @@ public final class MoveToNamedTarget extends AbstractRobotTwinOperation<ClosedLo
 	private final String m_target;
 	private final @Nullable Double m_velocityScaling;
 	private final @Nullable Duration m_maxDuration;
+	private final Duration m_settleTimeout;
+	private final double m_jointToleranceRad;
+	// 실행 시(buildInputs) 정한다 — 같은 작업 스레드에서 judgeResult 가 읽는다.
+	private boolean m_twinSettles;
 
 	/** 기본 속도 배율 0.3과 클라이언트의 원격 대기 상한을 사용한다. */
 	public MoveToNamedTarget(RobotTwinClient twin, String target) {
@@ -64,6 +71,8 @@ public final class MoveToNamedTarget extends AbstractRobotTwinOperation<ClosedLo
 		m_target = target;
 		m_velocityScaling = options.velocityScaling();
 		m_maxDuration = options.maxDuration();
+		m_settleTimeout = options.settleTimeout();
+		m_jointToleranceRad = options.jointToleranceRad();
 	}
 
 	@Override
@@ -74,13 +83,19 @@ public final class MoveToNamedTarget extends AbstractRobotTwinOperation<ClosedLo
 		if ( m_maxDuration != null ) {
 			inputs.put("max_duration_sec", MotionLimits.toSeconds(m_maxDuration));
 		}
+		m_twinSettles = OperationChecks.twinSettles(m_twin, "move_to_named_target", m_settleTimeout);
+		if ( m_twinSettles ) {
+			inputs.put(OperationChecks.SETTLE_INPUT, MotionLimits.toSeconds(m_settleTimeout));
+		}
 		return inputs;
 	}
 
 	@Override
 	protected ClosedLoopCheck judgeResult(OperationResult result) {
-		ClosedLoopCheck check = OperationChecks.judgeClosedLoop(result);
-		return check;
+		if ( m_twinSettles ) {
+			return OperationChecks.judgeSettledJoints(result, m_jointToleranceRad);
+		}
+		return OperationChecks.judgeClosedLoop(result);
 	}
 
 	private static Duration resolveTimeout(RobotTwinClient twin, MotionLimits options) {

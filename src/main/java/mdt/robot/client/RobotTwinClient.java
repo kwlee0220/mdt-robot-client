@@ -8,10 +8,13 @@ import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -84,6 +87,7 @@ public class RobotTwinClient {
 	private final Duration m_operationTimeout;
 
 	@GuardedBy("this") private Map<String,String> m_operationKinds = null;
+	@GuardedBy("this") private Map<String,Set<String>> m_operationInputs = null;
 
 	private RobotTwinClient(Builder builder) {
 		m_baseUrl = builder.m_baseUrl;
@@ -650,7 +654,7 @@ public class RobotTwinClient {
 				if ( rex instanceof RESTfulRemoteException rre && rre.getRemoteErrorEntity() != null ) {
 					RESTfulErrorEntity error = rre.getRemoteErrorEntity();
 					return new OperationResult(operation, OperationResult.Status.FAILED, Map.of(),
-												error.getCode(), error.getMessage());
+												error.getCode(), error.getMessage(), error.getDetails());
 				}
 				throw rex;	// 통신 실패
 			}
@@ -680,15 +684,53 @@ public class RobotTwinClient {
 		return KIND_ASYNC.equals(kind);
 	}
 
-	private synchronized @Nullable String kindOf(String operation, boolean reload) {
-		if ( m_operationKinds == null || reload ) {
-			Map<String,String> kinds = new HashMap<>();
-			for ( JsonNode op : operations() ) {
-				kinds.put(op.path("name").asText(), op.path("kind").asText());
-			}
-			m_operationKinds = kinds;
+	/**
+	 * 연산이 그 입력을 받는지 반환한다. 연산 카탈로그의 {@code inputs_schema.properties} 로 본다.
+	 * <p>
+	 * 트윈은 이동 연산의 입력 스키마를 {@code additionalProperties: false} 로 두어 모르는 입력을 {@code 400} 으로
+	 * 거부한다. 새 입력({@code settle_timeout_sec} 등)을 옛 트윈에 보내지 않으려고 먼저 묻는다. 카탈로그는
+	 * {@link #isAsyncOperation} 과 같은 캐시를 쓰며, 처음 보는 연산이면 한 번 다시 읽는다.
+	 *
+	 * @param operation	연산 이름.
+	 * @param input		입력 이름.
+	 * @return	카탈로그에 그 입력이 선언되어 있으면 {@code true}. 연산이 없으면 {@code false}.
+	 */
+	public boolean acceptsInput(String operation, String input) {
+		Set<String> inputs = inputsOf(operation, false);
+		if ( inputs == null ) {
+			inputs = inputsOf(operation, true);
 		}
+		return inputs != null && inputs.contains(input);
+	}
+
+	private synchronized @Nullable String kindOf(String operation, boolean reload) {
+		loadCatalog(reload);
 		return m_operationKinds.get(operation);
+	}
+
+	private synchronized @Nullable Set<String> inputsOf(String operation, boolean reload) {
+		loadCatalog(reload);
+		return m_operationInputs.get(operation);
+	}
+
+	@GuardedBy("this")
+	private void loadCatalog(boolean reload) {
+		if ( m_operationKinds != null && m_operationInputs != null && !reload ) {
+			return;
+		}
+		Map<String,String> kinds = new HashMap<>();
+		Map<String,Set<String>> inputs = new HashMap<>();
+		for ( JsonNode op : operations() ) {
+			String name = op.path("name").asText();
+			kinds.put(name, op.path("kind").asText());
+			Set<String> names = new HashSet<>();
+			for ( Map.Entry<String,JsonNode> prop : op.path("inputs_schema").path("properties").properties() ) {
+				names.add(prop.getKey());
+			}
+			inputs.put(name, Collections.unmodifiableSet(names));
+		}
+		m_operationKinds = kinds;
+		m_operationInputs = inputs;
 	}
 
 	private JsonNode getJson(String path) {

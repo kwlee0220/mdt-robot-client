@@ -54,16 +54,17 @@ Its robot README (`.../operation/robot/README.md`) documents the AAS inputs and 
   - `OperationResult` (`Status` enum).
   - Geometry: `Pose`/`Position`/`Quaternion`, `Geometry`, `PandaHand`.
   - Exceptions: `TwinException`, `SessionLostException`, `OperationTimeoutException`, `OperationFailedException`, `WrongBackendException`, `VariableNotOkException`.
-  - `Ops`: static helpers kept for older callers (`failureHint`, `FAILURE_HINTS`, `moveToNamedTargetVerified`).
+  - `Ops`: static helpers kept for older callers (`failureHint`, `FAILURE_HINTS`, `MOVEIT_HINTS`, `moveToNamedTargetVerified`). `failureHint` appends a per-cause hint from `OperationResult.moveitErrorName()` (the twin's `error.details.moveit_error_name`, kept by utils' `RESTfulErrorEntity.getDetails()`); keep `MOVEIT_HINTS` in step with the Python client's `ops.MOVEIT_HINTS`.
 - **`mdt.robot.client.operation`**: one-shot operation objects (constructors never communicate; run once with `run()` or `start()`/`get()`), on three bases:
   - `AbstractRobotTwinOperation<T>`: one remote operation. Subclasses implement `buildInputs()` and `judgeResult(OperationResult)`. Override `observesAfterRemote` when `judgeResult` waits on an observation. Covers `MoveLinear`, `MoveToNamedTarget`, `MoveToJoints`, `MoveGripperToNamedTarget`, `ResetScene`.
   - `AbstractObservationOperation<R,P>`: local GET polling with immutable progress/diagnostic snapshots (`ObservationDiagnostics`). Covers `WaitUntilArmStill`, `WaitUntilObjectStill`, `WaitForFreshVariable`, `MeasureObjectOffset`.
   - `AbstractStepwiseOperation<S,C>`: sequential composites. A step's child must return a `StepVerdict` (`goalReached()`, `failureReason()`), which is enforced by `Step`'s type. `AbstractStepSequenceOperation` takes a fixed step list (`Grasp`, `Pick`, `Place`). `AlignHeldObject` overrides `nextStep()` to decide steps at run time. Progress is `StepwiseProgress`/`StepResult` (`verdictAs(Class)`, `failureReason()`). `Pick`, `Place` and `AlignHeldObject` also have role-named builders (`Pick.builder(twin).approachPose(..).graspPose(..)…build()`); the positional constructors remain.
-  - Shared types: `MotionLimits` (velocity scaling, server `max_duration_sec`, client wait limit = `max(default, maxDuration + 30s)`), `ClosedLoopCheck`, `MoveCheck` (`failureCode` such as `SETTLE_TIMEOUT`), `GripperCheck`. Every result's explanation component is `failureReason` (null when the goal was reached).
+  - Shared types: `MotionLimits` (velocity scaling, server `max_duration_sec`, client wait limit = `max(default, maxDuration + 30s)`, twin-side `settleTimeout` and `jointToleranceRad`), `ClosedLoopCheck`, `MoveCheck` (`failureCode` such as `SETTLE_TIMEOUT`), `GripperCheck`. Every result's explanation component is `failureReason` (null when the goal was reached).
 
 ## Contracts to preserve
 
 - **A target not reached is a normal result, not an exception.** Every result implements `StepVerdict`. Remote `FAILED`/`CANCELLED` and failed judgements (open loop, settle timeout, hold not confirmed) complete normally with `goalReached=false`. Exceptions mean the request was rejected, communication failed, the session was lost, or the caller cancelled or interrupted. `COMPLETED` never means "reached".
+- **New twin inputs are sent only when the catalog declares them.** The twin's move schemas use `additionalProperties: false`, so an older twin rejects an unknown input with `400`. Check `RobotTwinClient.acceptsInput(operation, input)` first (e.g. `settle_timeout_sec` via `OperationChecks.twinSettles`) and keep the old client-side path as the fallback.
 - **Cancellation.**
   - A cancel during `STARTING` is latched and delivered once the session exists. Utils does the same before the session URL is known.
   - The `DELETE` is sent outside the control lock.

@@ -28,6 +28,7 @@ public final class FakeTwinServer implements AutoCloseable {
 
 	private final MockWebServer m_server = new MockWebServer();
 	private final Map<String,String> m_kinds = new ConcurrentHashMap<>();
+	private final Map<String,List<String>> m_inputs = new ConcurrentHashMap<>();
 	private final Map<String,Function<RecordedRequest,MockResponse>> m_handlers = new ConcurrentHashMap<>();
 	public final List<String> requests = new CopyOnWriteArrayList<>();
 
@@ -42,8 +43,13 @@ public final class FakeTwinServer implements AutoCloseable {
 					return handler.apply(req);
 				}
 				if ( req.getMethod().equals("GET") && path.equals("/operations") ) {
-					List<Map<String,String>> ops = new ArrayList<>();
-					m_kinds.forEach((name, kind) -> ops.add(Map.of("name", name, "kind", kind)));
+					List<Map<String,Object>> ops = new ArrayList<>();
+					m_kinds.forEach((name, kind) -> {
+						Map<String,Object> props = new java.util.LinkedHashMap<>();
+						m_inputs.getOrDefault(name, List.of()).forEach(input -> props.put(input, Map.of()));
+						ops.add(Map.of("name", name, "kind", kind,
+										"inputs_schema", Map.of("type", "object", "properties", props)));
+					});
 					return json(200, Map.of("operations", ops));
 				}
 				return json(404, Map.of("error", Map.of("code", "NOT_FOUND", "message", "unknown: " + path)));
@@ -54,6 +60,13 @@ public final class FakeTwinServer implements AutoCloseable {
 
 	public FakeTwinServer operation(String name, String kind) {
 		m_kinds.put(name, kind);
+		return this;
+	}
+
+	/** 카탈로그의 {@code inputs_schema.properties}에 실을 입력 이름까지 지정한다. */
+	public FakeTwinServer operation(String name, String kind, String... inputs) {
+		m_kinds.put(name, kind);
+		m_inputs.put(name, List.of(inputs));
 		return this;
 	}
 

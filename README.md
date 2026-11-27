@@ -275,8 +275,8 @@ for ( Map.Entry<String, JsonNode> entry : samples.entrySet() ) {
 | 목적 | 연산 | 완료 후 확인할 값 |
 |---|---|---|
 | 지정한 절대 위치·자세로 직선 이동 | [MoveLinear](#61-movelinear-연산-객체) | `MoveCheck.goalReached()` — 위치 판정 |
-| 이름으로 등록된 자세로 팔 이동 | [MoveToNamedTarget](#66-movetonamedtarget-연산-객체) | `ClosedLoopCheck.goalReached()` — 서버 폐루프 보고 |
-| 관절 목표값으로 이동 | [MoveToJoints](#67-movetojoints-연산-객체) | `ClosedLoopCheck.goalReached()` — 서버 폐루프 보고 |
+| 이름으로 등록된 자세로 팔 이동 | [MoveToNamedTarget](#66-movetonamedtarget-연산-객체) | `ClosedLoopCheck.goalReached()` — 트윈의 정착 후 관절 오차, 또는 서버 폐루프 보고 |
+| 관절 목표값으로 이동 | [MoveToJoints](#67-movetojoints-연산-객체) | `ClosedLoopCheck.goalReached()` — 트윈의 정착 후 관절 오차, 또는 서버 폐루프 보고 |
 | 그리퍼 열기·닫기·파지 목표 | [MoveGripperToNamedTarget](#68-movegrippertonamedtarget-연산-객체) | `GripperCheck.goalReached()` |
 | 장면 레시피 적용 | [ResetScene](#613-resetscene-연산-객체) | `Check.goalReached()`, 선택적 `observation()` 안의 `Result.goalReached()` |
 | 변수의 새 발행 기다리기 | [WaitForFreshVariable](#614-waitforfreshvariable-관측-연산-객체) | `Result.goalReached()` |
@@ -390,8 +390,9 @@ if ( !asyncCheck.goalReached() ) {
 
 생성자에서는 통신하지 않는다. `run()` 또는 `start()`로 한 번 실행한 객체는 재사용할 수 없다.
 `start()`는 기본적으로 별도 스레드에서 실행하며, `MoveLinear.setExecutor()`로 실행기를 지정할 수 있다.
-정착 대기 시간이 0이거나 `closed_loop`이 JSON Boolean `true`이면 서버 응답의 `final_pose`로
-위치를 검사한다. 그 외에는 정착을 확인한 관측값으로 위치를 검사한다. 목표 회전 자세에 도달했는지는 검사하지 않으며, 좌표 변환은 호출자가 수행한다.
+정착 대기 시간이 양수이고 트윈이 `settle_timeout_sec` 입력을 받으면 트윈이 정착을 기다리고, 그 판정 시점의
+`final_pose`로 위치를 검사한다. 옛 트윈이면 정착 대기 시간이 0이거나 `closed_loop`이 JSON Boolean `true`일 때
+서버 응답의 `final_pose`로, 그 외에는 정착을 확인한 관측값으로 위치를 검사한다. 목표 회전 자세에 도달했는지는 검사하지 않으며, 좌표 변환은 호출자가 수행한다.
 
 위치에 도달하지 못했거나, 정착 대기 시간이 초과됐거나, 서버 연산이 실패해도 결과는
 `goalReached=false`로 반환된다. 이때 로컬 실행 상태는 `COMPLETED`이므로 `isCompleted()`만으로
@@ -440,7 +441,7 @@ MoveCheck check = operation.run();
 |---|---|---|---|
 | `velocityScaling(Double)` | 이동 궤적의 속도 배율. 서버에 `velocity_scaling`으로 전달한다. `0.2`는 기준 속도에 0.2배를 적용한다는 뜻이다. | 단위 없는 유한한 수, `0 < 값 ≤ 1` | 기본 `0.2`. `null`이면 서버 기본값 사용 |
 | `positionToleranceM(double)` | 최종 위치가 목표 위치에 도달했다고 판단할 허용 오차. 각 축 오차의 최댓값과 비교한다(유클리드 거리가 아님). 클라이언트 판정에만 사용한다. | m, 유한한 수, `0` 이상 | 기본 `0.005`(5mm) |
-| `settleTimeout(Duration)` | 서버 완료 응답 후 새 `ee_pose` 관측으로 정착을 확인할 최대 대기 시간. 클라이언트에서 사용한다. | `0` 이상, 나노초로 변환할 때 `long` 범위 내. `null` 불가 | 기본 `Duration.ZERO`. `0` 또는 폐루프 완료 응답이면 `final_pose` 사용 |
+| `settleTimeout(Duration)` | 이동 뒤 정착을 확인할 최대 대기 시간. 트윈이 `settle_timeout_sec`를 받으면 그 입력으로 보내 트윈이 기다리고, 받지 않으면 클라이언트가 새 `ee_pose` 관측으로 확인한다. | `0` 이상, 나노초로 변환할 때 `long` 범위 내. `null` 불가 | 기본 `Duration.ZERO`. `0` 또는 폐루프 완료 응답이면 `final_pose` 사용 |
 | `maxDuration(Duration)` | 서버가 연산을 수행할 수 있는 시간 상한. 초 단위 수치로 바꿔 `max_duration_sec`에 전달한다. | 양수. 서버가 배포별 허용 범위를 추가로 검사한다. | 기본 `null`. 생략 시 서버의 연산별 제한 사용 |
 | `timeout(Duration)` | 클라이언트가 비동기 원격 연산의 최종 결과를 기다릴 시간 상한. | 양수, `null` 불가 | `twin.getOperationTimeout()` 값. 클라이언트 기본 설정은 120초 |
 
@@ -495,21 +496,31 @@ MDT `MoveLinearProvider`는 `Frame`, `MaxStep`, `JumpThreshold` 입력을 받지
 `pose`의 회전 자세는 이동 명령에 포함되지만 `goalReached`는 위치만 검사한다.
 
 `settleTimeout`은 일정 시간 동안 무조건 멈춰 기다리는 지연 시간이 아니라 **정착을 확인할 대기 상한**이다.
-정착이 확인되면 일찍 끝난다. 현재 정착 판정에는 `WaitUntilArmStill.Options.DEFAULT`의 위치 변화 허용치
-0.2mm, 정숙 구간 600ms, 조회 간격 300ms를 사용한다. 이 조건들은 `positionToleranceM`과 별개이며,
+정착이 확인되면 일찍 끝난다.
+
+**트윈이 `settle_timeout_sec` 입력을 받으면 트윈이 기다린다.** 클라이언트는 연산 카탈로그의 입력 스키마로
+지원 여부를 확인하고(`RobotTwinClient.acceptsInput()`, 카탈로그는 캐시한다) 상한을 그 입력으로 보낸다. 트윈은
+실행 뒤 새로 받은 `ee_pose`가 위치·자세 허용량 안에 머무는지 보고, 결과에 `settled`와 정착 시점의 `final_pose`를
+싣는다. 판정 기준(허용량·머무는 시간)은 백엔드 프로파일이 정하므로 시뮬레이터가 이동 중 잠시 멈추는 백엔드에서도
+오판하지 않는다. 클라이언트는 `ee_pose`를 읽지 않는다. 트윈의 정착 대기는 서버의 `max_duration_sec` 안에 포함된다.
+
+입력을 받지 않는 옛 트윈이면 클라이언트가 `WaitUntilArmStill.Options.DEFAULT`(위치 변화 허용치 0.2mm,
+정숙 구간 600ms, 조회 간격 300ms)로 확인한다. 이 조건들은 `positionToleranceM`과 별개이며,
 `MoveLinear` 빌더에서는 정착 대기 상한만 바꿀 수 있다.
 
-정착 관측 여부는 빌더와 기존 생성자 모두 다음 정책을 사용한다.
+위치 판정에 쓰는 값은 빌더와 기존 생성자 모두 다음 정책을 따른다.
 
 | 조건 | 위치 판정에 사용하는 값 |
 |---|---|
 | `settleTimeout == 0` | 서버의 `final_pose` |
-| `settleTimeout > 0`, `closed_loop`이 JSON Boolean `true` | 서버의 `final_pose`. 추가 관측 생략 |
-| `settleTimeout > 0`, 그 외(`false`, 누락, null, 잘못된 형식) | 새 `ee_pose`로 정착을 확인한 뒤 그 관측값 사용 |
+| `settleTimeout > 0`, 트윈이 `settle_timeout_sec` 지원 | `settled=true`면 트윈의 정착 시점 `final_pose`. 아니면 `SETTLE_TIMEOUT` |
+| `settleTimeout > 0`, 옛 트윈, `closed_loop`이 JSON Boolean `true` | 서버의 `final_pose`. 추가 관측 생략 |
+| `settleTimeout > 0`, 옛 트윈, 그 외(`false`, 누락, null, 잘못된 형식) | 새 `ee_pose`로 정착을 확인한 뒤 그 관측값 사용 |
 
 정착 시간 초과 시에는 이전 `final_pose`로 성공을 판정하지 않고
-`goalReached=false`, `failureCode=SETTLE_TIMEOUT`을 반환한다. 관측을 생략한 경우 `settledPose()`는 null이다.
-폐루프에서도 추가 정착 확인이 필요한 작업은 `WaitUntilArmStill`을 별도로 실행한다.
+`goalReached=false`, `failureCode=SETTLE_TIMEOUT`을 반환한다. 정착을 확인하지 않은 경우 `settledPose()`는 null이다.
+트윈이 기다리는 경우에는 폐루프(JTC) 스택에서도 정착을 확인한다. 옛 트윈의 폐루프에서 추가 정착 확인이 필요한
+작업은 `WaitUntilArmStill`을 별도로 실행한다.
 이 정책은 빌더와 기존 생성자에 동일하게 적용된다.
 
 빌더 생성과 `build()`는 통신하지 않는다. `build()`는 설정을 복사해 실행 객체를 만들므로,
@@ -529,14 +540,15 @@ boolean accepted = operation.cancel(true);
 |---|---|---|
 | 빌더의 `maxDuration` | 서버에서 연산을 실행하는 시간 상한 | 서버가 시간 초과를 판정해 종료 결과를 반환. 현재 RDFP에서는 `FAILED`/`TIMEOUT`이며, 이를 받은 `MoveLinear`는 `goalReached=false` 반환 |
 | 빌더 또는 생성자의 `timeout` | 비동기 원격 연산 결과 대기 | `OperationTimeoutException`을 원인으로 `FAILED`. 원격 연산은 자동 취소하지 않음 |
-| 빌더의 `settleTimeout` 또는 `MoveLinear.Options.settleTimeout()` | 서버 완료 응답 이후 정착 확인 | `goalReached=false`, `failureCode=SETTLE_TIMEOUT` |
+| 빌더의 `settleTimeout` 또는 `MoveLinear.Options.settleTimeout()` | 이동 뒤 정착 확인. 트윈이 기다리면 서버의 `max_duration_sec` 안에 포함 | `goalReached=false`, `failureCode=SETTLE_TIMEOUT` |
 | `get(timeout, unit)` | 호출자의 결과 대기 | 호출자에게 `TimeoutException`. 실행 객체는 계속 동작 |
 
 각 시간 제한은 독립적으로 적용된다. 다만 `timeout`을 지정하지 않고 `maxDuration`만 지정하면 대기 제한은
 `max(operationTimeout, maxDuration + 30초)`다(`MotionLimits`와 같은 규칙). 서버가 아직 팔을 움직이는 동안
 클라이언트가 먼저 포기하지 않게 하기 위해서다. 실행 객체의 실제 대기 제한은 `getRemoteTimeout()`으로 확인한다.
 위 예제에서는 서버 실행 제한을 60초, 결과 대기를 90초로 지정해 서버의 시간 초과 판정과 응답을
-기다릴 여유를 둔다. 정상 완료 응답을 받은 뒤 정착이 필요하면 별도로 최대 10초를 더 기다린다.
+기다릴 여유를 둔다. 정착 확인은 최대 10초다 — 트윈이 기다리면 서버 실행 제한 60초 안에 들어가고, 옛 트윈이면
+정상 완료 응답을 받은 뒤 클라이언트가 별도로 최대 10초를 더 기다린다.
 30초의 여유는 이 예제와 MDT Provider에서 쓰는 값이며 빌더의 고정 규칙이 아니다.
 `timeout`에는 정착 대기나 카탈로그 조회 시간이 포함되지 않으며, 시간이 지나도 로봇을 강제로
 정지시키지는 않는다. 이 값들을 전체 `run()` 호출 시간의 엄격한 상한으로 해석해서는 안 된다.
@@ -971,8 +983,29 @@ if ( !result.goalReached() ) {
 | 없는 이름·자원 경합 등 접수 거부 | `FAILED`, `ExecutionException`의 원인은 `TwinException` |
 | 접수 뒤 세션 상실(세션 404 등) | `FAILED`, 원인은 `SessionLostException` — 결과를 알 수 없음, 로봇이 움직였을 수 있음 |
 
-이 판정은 서버의 `closed_loop` 출력에 근거하며, 추가 관절 관측이나 정착 확인을 수행하지 않는다.
+정착 대기를 쓰지 않으면 이 판정은 서버의 `closed_loop` 출력에 근거하며, 추가 관절 관측이나 정착 확인을 수행하지 않는다.
 개루프·정보 누락·형식 오류의 `goalReached=false`는 **도달 확인 불가**이며 미도달이 확정됐다는 뜻이 아니다.
+
+**트윈에 정착 대기를 맡기면 개루프 스택에서도 도달을 판정할 수 있다.** `MotionLimits.withSettleTimeout()`을 양수로
+주고 트윈이 `settle_timeout_sec` 입력을 받으면, 트윈이 팔이 멈출 때까지 기다린 뒤 목표 관절값과의 최대 차
+(`goal_error.joint_max_rad`)를 돌려준다. 그 값이 `jointToleranceRad`(기본 0.01 rad) 이하이면 `goalReached=true`다.
+JTC·JGPC 스택이 같은 기준으로 판정된다. 판정에 쓴 값은 `ClosedLoopCheck.jointErrorRad()`, 정착 여부는 `settled()`로 읽는다.
+입력을 받지 않는 옛 트윈에는 보내지 않고 위 `closed_loop` 규칙으로 판정한다.
+
+```java
+MotionLimits options = MotionLimits.DEFAULT
+        .withSettleTimeout(Duration.ofSeconds(10))   // 트윈이 정착을 기다린다(max_duration_sec 안에 포함)
+        .withJointToleranceRad(0.01);
+ClosedLoopCheck check = new MoveToNamedTarget(twin, "ready", options).run();
+check.jointErrorRad().ifPresent(e -> System.out.printf("관절 최대 오차 %.4f rad%n", e));
+```
+
+| 트윈 정착 대기 결과 | `ClosedLoopCheck` |
+|---|---|
+| `settled=true`, `joint_max_rad ≤ jointToleranceRad` | `goalReached=true` |
+| `settled=true`, `joint_max_rad > jointToleranceRad` | `goalReached=false`, 오차와 허용값 안내 |
+| `settled=true`, `goal_error` 없음(목표 관절값을 못 구함) | `goalReached=false`, 관절 직접 확인 안내 |
+| `settled=false` 또는 누락 | `goalReached=false`, `SETTLE_TIMEOUT` 안내 |
 문자열 `"true"`나 숫자 `1`을 Boolean `true`로 변환하여 도달로 인정하지 않는다.
 사용 가능한 이름은 트윈의 `named_targets`에서 확인한다. 취소를 직접 요청한 실행은 위 서버 결과의
 정상 반환과 구분되며, 세션이 종료되면 로컬 실행은 `CANCELLED`가 된다.
@@ -1012,8 +1045,8 @@ ClosedLoopCheck check = new MoveToNamedTarget(twin, "ready", options).run();
 인터럽트를 처리한다. 개별 연산은 `buildInputs()`에서 요청 입력을 만들고 `judgeResult()`에서 결과를 판정한다.
 `MoveLinear`는 `observesAfterRemote()`으로 정착 관측 단계가 있음을 알리며, 이 단계는 인터럽트로 취소할 수 있다.
 
-`MoveToNamedTarget`과 `MoveToJoints`는 패키지 내부 보조 클래스 `OperationChecks`의 폐루프 판정 코드를 공유한다.
-실패 이유는 알려진 오류 코드의 설명, 내용이 있는 서버 `errorMessage`, 원격 상태 이름 순으로 선택한다.
+`MoveToNamedTarget`과 `MoveToJoints`는 패키지 내부 보조 클래스 `OperationChecks`의 폐루프 판정·정착 후 관절 오차 판정 코드를 공유한다.
+실패 이유는 알려진 오류 코드의 설명(MoveIt 원인이 있으면 원인별 안내 포함), 내용이 있는 서버 `errorMessage`, 원격 상태 이름 순으로 선택한다.
 그리퍼 연산도 같은 방식으로 이유를 정한다. 따라서 모르는 오류 코드나 원격 취소가 발생해도
 `failureReason`에서 설명을 확인할 수 있다. 공개 결과 타입과 `Ops`의 반환 타입은 그대로 유지한다.
 
@@ -1087,7 +1120,8 @@ ClosedLoopCheck check = operation.run();
 | 서버 `FAILED` 또는 `CANCELLED` | `goalReached=false`, 실패 안내와 원격 결과 / `COMPLETED` |
 | 접수 거부·통신 오류 | `ExecutionException`에 원인 예외 / `FAILED` |
 
-도달 판정은 `MoveToNamedTarget`과 같이 서버의 폐루프 실행 보고에 근거한다. 문자열 `"true"`나
+정착 대기(`MotionLimits.withSettleTimeout()`)도 `MoveToNamedTarget`과 같다 — 트윈이 지원하면 정착 후 관절 최대 오차로
+판정한다. 정착 대기를 쓰지 않으면 도달 판정은 `MoveToNamedTarget`과 같이 서버의 폐루프 실행 보고에 근거한다. 문자열 `"true"`나
 숫자 `1`은 인정하지 않는다. 개루프·정보 누락·형식 오류의 `goalReached=false`는 **도달 확인 불가**다.
 `final_joints`는 캐시 스냅샷이어서 목표와의 오차 비교나 정착 확인에 사용하지 않는다.
 `final_joints`와 `measured_age_ms`는 `check.result()`에서 조회할 수 있으며 서버에서 누락할 수도 있다.
@@ -1777,8 +1811,11 @@ import mdt.robot.client.operation.MeasureObjectOffset;
 ```
 
 Java의 `import mdt.robot.client.*`는 하위 패키지를 포함하지 않으므로 `operation`의 import를 별도로 추가한다.
-`Ops`는 정적 도우미 `moveToNamedTargetVerified(twin, target)`과 공통 실패 안내 `failureHint(result)`·`FAILURE_HINTS`를
-제공한다. 그 밖의 연산은 연산 객체를 직접 만들어 실행한다.
+`Ops`는 정적 도우미 `moveToNamedTargetVerified(twin, target)`과 공통 실패 안내 `failureHint(result)`·`FAILURE_HINTS`·
+`MOVEIT_HINTS`를 제공한다. `failureHint`는 오류 코드의 안내 뒤에 MoveIt 원인별 안내를 `MoveIt 원인 <이름>: <안내>`
+꼴로 붙인다(예: 시작 자세 충돌이면 "목표를 바꿔도 결과가 같다"). 모르는 코드라도 MoveIt 원인이 있으면 그것만으로 안내한다.
+`MOVEIT_HINTS`는 Python 클라이언트의 `ops.MOVEIT_HINTS`와 같은 문장이다. 이 안내는 `MoveCheck`·`ClosedLoopCheck`·
+그리퍼·장면 초기화 결과의 `failureReason`에도 그대로 들어간다. 그 밖의 연산은 연산 객체를 직접 만들어 실행한다.
 
 `OperationInputs`와 `OperationChecks`는 `operation` 패키지 안에서만 사용하는 보조 타입이다.
 공통 진행 정보 타입인 `StepwiseProgress`, `StepResult`, `ChildCancellationState`와
@@ -1889,8 +1926,17 @@ null 입력은 빈 입력으로 처리된다.
 | `boolean cancel()` | 취소를 요청한다. 세션 확보 전에는 요청을 기록해 두며, true가 물리적 정지 완료를 뜻하지는 않는다. |
 
 `OperationResult`는 `Status status()`, `boolean isCompleted()`, `Map<String, JsonNode> outputs()`,
-`JsonNode output(String name)`, `String errorCode()`, `String errorMessage()`로 읽는다.
+`JsonNode output(String name)`, `String errorCode()`, `String errorMessage()`, `JsonNode errorDetails()`,
+`Optional<String> moveitErrorName()`으로 읽는다.
 없는 출력은 `output()`에서 null로 반환한다. 저수준 결과에는 목표 도달 판정이 포함되지 않는다.
+
+`errorDetails()`는 트윈이 실패 응답의 `error.details`에 실은 구조화된 원인이며, 없으면 null이다. 트윈은 MoveIt이 오류
+코드를 준 실패에 `{"moveit_error_code": -12, "moveit_error_name": "GOAL_IN_COLLISION"}`처럼 원본 코드를 싣는다(트윈
+설계서 6.8). `moveitErrorName()`은 그 이름을, 이름 없이 코드만 있으면 `error_code=<값>`을 돌려준다.
+`PLANNING_FAILED` 하나로는 시작 자세 문제(`START_STATE_IN_COLLISION`)와 목표 문제(`GOAL_IN_COLLISION`,
+`NO_IK_SOLUTION`)가 같아 보이지만 대응이 반대이므로, 원인별로 분기할 때 이 값을 쓴다. 5인자 생성자는 그대로 있고
+`errorDetails`를 null로 둔다. `OperationFailedException`의 메시지에도 `PLANNING_FAILED(GOAL_IN_COLLISION): …`처럼 원인이 실린다.
+`error.details`는 utils의 `RESTfulErrorEntity.getDetails()`가 보존해 넘긴다.
 
 #### 8.3.3. RobotTwinOperation과 StepVerdict — 실행과 판정
 

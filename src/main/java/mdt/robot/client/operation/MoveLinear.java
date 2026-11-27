@@ -29,8 +29,11 @@ import utils.Preconditions;
  * <p>
  * 목표는 서버 기본 EE 프레임(미설정 시 tip 프레임) 기준으로 전달한다. frame, max_step,
  * jump_threshold는 보내지 않고 서버 설정을 따른다. 목표와 ee_pose는 같은 좌표계·기준점이어야 한다.
- * {@link Options#settleTimeout()}이 0이거나 closed_loop이 JSON Boolean true이면 final_pose로
- * 위치를 비교한다. 그 외에는 새 관측으로 정착을 확인한 뒤 비교한다. 회전 도달은 검사하지 않는다.
+ * {@link Options#settleTimeout()}이 양수이고 트윈이 {@code settle_timeout_sec} 입력을 받으면 <b>트윈이 정착을 기다린다</b> —
+ * 그 입력으로 상한을 넘기고, 결과의 {@code settled}가 true이면 정착 판정 시점의 final_pose로 위치를 비교하며
+ * 그 값을 {@link MoveCheck#settledPose()}로 돌려준다(클라이언트는 ee_pose를 읽지 않는다). 트윈의 정착 대기는 서버의
+ * max_duration_sec 안에 포함된다. 입력을 받지 않는 옛 트윈이면, settleTimeout이 0이거나 closed_loop이 JSON Boolean
+ * true일 때 final_pose로 비교하고 그 외에는 새 관측으로 정착을 확인한 뒤 비교한다. 회전 도달은 검사하지 않는다.
  * <p>
  * 위치 미도달·정착 시간 초과·서버 연산 실패는 {@code goalReached=false} 결과로 정상 완료한다.
  * 실행의 {@code isCompleted()}만으로 도달을 판단하지 않는다. 통신·접수 예외는 실행을 실패시키며
@@ -53,6 +56,8 @@ public final class MoveLinear extends AbstractRobotTwinOperation<MoveCheck> {
 	private final Pose m_pose;
 	private final Options m_options;
 	private final @Nullable Duration m_maxDuration;
+	// 실행 시(buildInputs) 정한다 — 같은 작업 스레드에서 judgeResult·observesAfterRemote 가 읽는다.
+	private boolean m_twinSettles;
 
 	/** 기본 옵션(정착 대기 없음)으로 만든다. 개루프 환경에서는 양수 정착 시간을 지정한다. */
 	public MoveLinear(RobotTwinClient twin, Pose pose) {
@@ -205,11 +210,18 @@ public final class MoveLinear extends AbstractRobotTwinOperation<MoveCheck> {
 		if ( m_maxDuration != null ) {
 			inputs.put("max_duration_sec", MotionLimits.toSeconds(m_maxDuration));
 		}
+		m_twinSettles = OperationChecks.twinSettles(m_twin, "move_linear", m_options.settleTimeout());
+		if ( m_twinSettles ) {
+			inputs.put(OperationChecks.SETTLE_INPUT, MotionLimits.toSeconds(m_options.settleTimeout()));
+		}
 		return inputs;
 	}
 
 	@Override
 	protected boolean observesAfterRemote(OperationResult result) {
+		if ( m_twinSettles ) {
+			return false;	// 트윈이 이미 기다렸다
+		}
 		JsonNode closedLoop = result.output("closed_loop");
 		boolean closed = closedLoop != null && closedLoop.isBoolean() && closedLoop.booleanValue();
 		return result.isCompleted() && !m_options.settleTimeout().isZero() && !closed;
@@ -223,7 +235,16 @@ public final class MoveLinear extends AbstractRobotTwinOperation<MoveCheck> {
 
 		JsonNode settled = null;
 		JsonNode observed = result.output("final_pose");
-		if ( observesAfterRemote(result) ) {
+		if ( m_twinSettles ) {
+			if ( !OperationChecks.settled(result) ) {
+				return new MoveCheck(false, null, MoveCheck.SETTLE_TIMEOUT,
+						"위치 정착 확인 실패: 트윈이 제한 시간 안에 팔이 멈춘 것을 확인하지 못했다. "
+						+ "현재 상태를 확인하고 다음 동작을 멈춘다", result, null);
+			}
+			// 트윈이 정착을 판정했으면 final_pose 가 그 시점의 값이다.
+			settled = (observed != null && !observed.isNull()) ? observed : null;
+		}
+		else if ( observesAfterRemote(result) ) {
 			WaitUntilArmStill observation = new WaitUntilArmStill(m_twin,
 					WaitUntilArmStill.Options.DEFAULT.withTimeout(m_options.settleTimeout()));
 			WaitUntilArmStill.Result still = observation.run();
